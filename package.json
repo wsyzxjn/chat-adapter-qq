@@ -1,0 +1,58 @@
+{
+  "name": "@amatsuka/chat-adapter-qq",
+  "version": "0.1.0",
+  "description": "QQ adapter for chat",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node ./node_modules/tsup/dist/cli-default.js",
+    "dev": "node ./node_modules/tsup/dist/cli-default.js --watch",
+    "test": "node ./node_modules/vitest/vitest.mjs run",
+    "pretest:bot": "pnpm run build",
+    "test:coverage": "node ./node_modules/vitest/vitest.mjs run --coverage",
+    "test:watch": "node ./node_modules/vitest/vitest.mjs",
+    "test:bot": "node --env-file=.env.local --experimental-strip-types test/server.mjs",
+    "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "chat": "^4.28.1"
+  },
+  "devDependencies": {
+    "@chat-adapter/state-memory": "^4.28.1",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wsyzxjn/chat-adapter-qq.git"
+  },
+  "homepage": "https://github.com/wsyzxjn/chat-adapter-qq#readme",
+  "bugs": {
+    "url": "https://github.com/wsyzxjn/chat-adapter-qq/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "chat",
+    "qq",
+    "bot",
+    "adapter"
+  ],
+  "license": "MIT",
+  "packageManager": "pnpm@10.30.1+sha512.3590e550d5384caa39bd5c7c739f72270234b2f6059e13018f975c313b1eb9fefcc09714048765d4d9efe961382c312e624572c0420762bdc5d5940cdf9be73a"
+}
