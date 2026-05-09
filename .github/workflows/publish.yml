@@ -3,7 +3,7 @@ name: Publish
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -39,7 +39,7 @@ jobs:
         run: pnpm run test
 
       - name: Build
-        run: pnpm run build
+        run: pnpm run build:production
 
       - name: Publish package
         run: npm publish --access public --provenance
