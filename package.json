@@ -19,10 +19,11 @@
     "build": "tsup",
     "build:production": "NODE_ENV=production tsup",
     "dev": "tsup --watch",
-    "test": "node ./node_modules/vitest/vitest.mjs run",
+    "pretest": "pnpm run build",
+    "test": "node --test test/*.test.*",
     "pretest:bot": "pnpm run build",
-    "test:coverage": "node ./node_modules/vitest/vitest.mjs run --coverage",
-    "test:watch": "node ./node_modules/vitest/vitest.mjs",
+    "test:coverage": "node --test --test-coverage test/*.test.*",
+    "test:watch": "node --test --watch test/*.test.*",
     "test:bot": "node --env-file=.env.local --experimental-strip-types test/server.mjs",
     "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
     "clean": "rm -rf dist"
@@ -34,8 +35,7 @@
     "@chat-adapter/state-memory": "^4.28.1",
     "@types/node": "^25.6.2",
     "tsup": "^8.5.1",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.5"
+    "typescript": "^5.9.3"
   },
   "repository": {
     "type": "git",

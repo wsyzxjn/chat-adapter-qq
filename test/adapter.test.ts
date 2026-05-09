@@ -1,12 +1,15 @@
 import type { ChatInstance, Logger } from "chat";
 import { Actions, Button, Card, CardText, LinkButton } from "chat";
-import { createPrivateKey, sign } from "node:crypto";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { QQAdapter } from "../src/adapter.js";
+import { QQAdapter } from "@amatsuka/chat-adapter-qq";
+import { describe, it, afterEach, mock } from "node:test";
+import assert from "node:assert/strict";
 
 const APP_ID = "11111111";
 const BOT_SECRET = "DG5g3B4j9X2KOErG";
-const ED25519_PRIVATE_KEY_DER_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
+const ED25519_PRIVATE_KEY_DER_PREFIX = new Uint8Array([
+  0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70,
+  0x04, 0x22, 0x04, 0x20,
+]);
 
 function createAdapter(config: Partial<ConstructorParameters<typeof QQAdapter>[0]> = {}): QQAdapter {
   return new QQAdapter({
@@ -29,27 +32,34 @@ function createSilentLogger(): Logger {
   return logger;
 }
 
-function createBotSeed(secret: string): Buffer {
-  const source = Buffer.from(secret, "utf8");
-  const seed = Buffer.alloc(32);
+function createBotSeed(secret: string): Uint8Array {
+  const source = new TextEncoder().encode(secret);
+  const seed = new Uint8Array(32);
   for (let index = 0; index < seed.length; index += 1) {
     seed[index] = source[index % source.length];
   }
   return seed;
 }
 
-function signQQMessage(secret: string, message: string): string {
-  const privateKey = createPrivateKey({
-    format: "der",
-    key: Buffer.concat([ED25519_PRIVATE_KEY_DER_PREFIX, createBotSeed(secret)]),
-    type: "pkcs8",
-  });
-  return sign(null, Buffer.from(message, "utf8"), privateKey).toString("hex");
+async function signQQMessage(secret: string, message: string): Promise<string> {
+  const seed = createBotSeed(secret);
+  const pkcs8Der = new Uint8Array(ED25519_PRIVATE_KEY_DER_PREFIX.length + seed.length);
+  pkcs8Der.set(ED25519_PRIVATE_KEY_DER_PREFIX, 0);
+  pkcs8Der.set(seed, ED25519_PRIVATE_KEY_DER_PREFIX.length);
+  const privateKey = await crypto.subtle.importKey(
+    "pkcs8",
+    pkcs8Der,
+    "Ed25519",
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("Ed25519", privateKey, new TextEncoder().encode(message));
+  return Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function signedRequest(body: string, options: { signature?: string; timestamp?: string } = {}): Request {
+async function signedRequest(body: string, options: { signature?: string; timestamp?: string } = {}): Promise<Request> {
   const timestamp = options.timestamp ?? Math.floor(Date.now() / 1000).toString();
-  const signature = options.signature ?? signQQMessage(BOT_SECRET, `${timestamp}${body}`);
+  const signature = options.signature ?? await signQQMessage(BOT_SECRET, `${timestamp}${body}`);
   return new Request("https://example.test/webhooks/qq", {
     body,
     headers: {
@@ -62,28 +72,44 @@ function signedRequest(body: string, options: { signature?: string; timestamp?: 
 }
 
 async function initializeWithProcessSpy(adapter: QQAdapter) {
-  const processMessage = vi.fn();
+  const processMessage = mock.fn();
   await adapter.initialize({ processMessage } as unknown as ChatInstance);
   return processMessage;
 }
 
 async function initializeWithProcessActionSpy(adapter: QQAdapter) {
-  const processAction = vi.fn();
+  const processAction = mock.fn();
   await adapter.initialize({ processAction } as unknown as ChatInstance);
   return processAction;
 }
 
 async function initializeWithProcessSlashCommandSpy(adapter: QQAdapter) {
-  const processMessage = vi.fn();
-  const processSlashCommand = vi.fn();
+  const processMessage = mock.fn();
+  const processSlashCommand = mock.fn();
   await adapter.initialize({ processMessage, processSlashCommand } as unknown as ChatInstance);
   return { processMessage, processSlashCommand };
 }
 
+const _fetch = globalThis.fetch;
+
 afterEach(() => {
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
+  mock.restoreAll();
+  globalThis.fetch = _fetch;
 });
+
+function assertMatchObject(actual: unknown, expected: Record<string, unknown>, path = ""): void {
+  for (const key of Object.keys(expected)) {
+    const currentPath = path ? `${path}.${key}` : key;
+    const expectedValue = expected[key];
+    const actualValue = (actual as Record<string, unknown>)[key];
+
+    if (expectedValue !== null && typeof expectedValue === "object" && !Array.isArray(expectedValue)) {
+      assertMatchObject(actualValue, expectedValue as Record<string, unknown>, currentPath);
+    } else {
+      assert.deepStrictEqual(actualValue, expectedValue, currentPath);
+    }
+  }
+}
 
 describe("QQAdapter webhook security", () => {
   it("returns the official validation challenge signature", async () => {
@@ -109,7 +135,7 @@ describe("QQAdapter webhook security", () => {
       }),
     );
 
-    await expect(response.json()).resolves.toEqual({
+    assert.deepStrictEqual(await response.json(), {
       plain_token: "Arq0D5A61EgUu4OxUvOp",
       signature:
         "87befc99c42c651b3aac0278e71ada338433ae26fcb24307bdc5ad38c1adc2d01bcfcadc0842edac85e85205028a1132afe09280305f13aa6909ffc2d652c706",
@@ -131,10 +157,10 @@ describe("QQAdapter webhook security", () => {
       t: "READY",
     });
 
-    const response = await adapter.handleWebhook(signedRequest(body));
+    const response = await adapter.handleWebhook(await signedRequest(body));
 
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
+    assert.strictEqual(response.status, 200);
+    assert.deepStrictEqual(await response.json(), {
       d: {
         seq: 42,
       },
@@ -155,13 +181,13 @@ describe("QQAdapter webhook security", () => {
     });
 
     const response = await adapter.handleWebhook(
-      signedRequest(body, {
+      await signedRequest(body, {
         signature: "00".repeat(64),
       }),
     );
 
-    expect(response.status).toBe(401);
-    await expect(response.json()).resolves.toMatchObject({
+    assert.strictEqual(response.status, 401);
+    assertMatchObject(await response.json(), {
       error: {
         code: "INVALID_SIGNATURE",
       },
@@ -174,10 +200,10 @@ describe("QQAdapter webhook security", () => {
       verifySignature: true,
     });
 
-    const response = await adapter.handleWebhook(signedRequest("{not-json"));
+    const response = await adapter.handleWebhook(await signedRequest("{not-json"));
 
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
+    assert.strictEqual(response.status, 400);
+    assertMatchObject(await response.json(), {
       error: {
         code: "INVALID_JSON",
       },
@@ -213,10 +239,10 @@ describe("QQAdapter webhook events", () => {
       }),
     );
 
-    expect(response.status).toBe(200);
-    expect(processMessage).toHaveBeenCalledTimes(1);
-    expect(processMessage.mock.calls[0]?.[1]).toBe("qq:c2c/user-openid");
-    expect(processMessage.mock.calls[0]?.[2]).toMatchObject({
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(processMessage.mock.callCount(), 1);
+    assert.strictEqual(processMessage.mock.calls[0]?.arguments[1], "qq:c2c/user-openid");
+    assertMatchObject(processMessage.mock.calls[0]?.arguments[2], {
       id: "message-1",
       text: "hello",
       threadId: "qq:c2c/user-openid",
@@ -245,9 +271,9 @@ describe("QQAdapter webhook events", () => {
       }),
     );
 
-    expect(response.status).toBe(200);
-    expect(processMessage).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toEqual({
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(processMessage.mock.callCount(), 0);
+    assert.deepStrictEqual(await response.json(), {
       d: {
         seq: 8,
       },
@@ -256,7 +282,7 @@ describe("QQAdapter webhook events", () => {
   });
 
   it("dispatches known QQ platform events to adapter onEvent handlers", async () => {
-    const onEvent = vi.fn();
+    const onEvent = mock.fn();
     const adapter = createAdapter();
     adapter.onEvent("FRIEND_ADD", onEvent);
     await initializeWithProcessSpy(adapter);
@@ -279,9 +305,9 @@ describe("QQAdapter webhook events", () => {
       }),
     );
 
-    expect(response.status).toBe(200);
-    expect(onEvent).toHaveBeenCalledTimes(1);
-    expect(onEvent.mock.calls[0]?.[0]).toMatchObject({
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(onEvent.mock.callCount(), 1);
+    assertMatchObject(onEvent.mock.calls[0]?.arguments[0], {
       data: {
         openid: "user-openid",
       },
@@ -291,7 +317,7 @@ describe("QQAdapter webhook events", () => {
   });
 
   it("supports catch-all QQ platform event handlers and unsubscribe", async () => {
-    const onEvent = vi.fn();
+    const onEvent = mock.fn();
     const adapter = createAdapter();
     const unsubscribe = adapter.onEvent(onEvent);
     await initializeWithProcessSpy(adapter);
@@ -317,7 +343,7 @@ describe("QQAdapter webhook events", () => {
     unsubscribe();
     await adapter.handleWebhook(request());
 
-    expect(onEvent).toHaveBeenCalledTimes(1);
+    assert.strictEqual(onEvent.mock.callCount(), 1);
   });
 
   it("returns 400 for unknown events in strict mode", async () => {
@@ -342,9 +368,9 @@ describe("QQAdapter webhook events", () => {
       }),
     );
 
-    expect(response.status).toBe(400);
-    expect(processMessage).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toMatchObject({
+    assert.strictEqual(response.status, 400);
+    assert.strictEqual(processMessage.mock.callCount(), 0);
+    assertMatchObject(await response.json(), {
       error: {
         code: "UNSUPPORTED_EVENT",
       },
@@ -378,10 +404,10 @@ describe("QQAdapter webhook events", () => {
       }),
     );
 
-    expect(response.status).toBe(200);
-    expect(processMessage).not.toHaveBeenCalled();
-    expect(processSlashCommand).toHaveBeenCalledTimes(1);
-    expect(processSlashCommand.mock.calls[0]?.[0]).toMatchObject({
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(processMessage.mock.callCount(), 0);
+    assert.strictEqual(processSlashCommand.mock.callCount(), 1);
+    assertMatchObject(processSlashCommand.mock.calls[0]?.arguments[0], {
       channelId: "qq:c2c/user-openid",
       command: "/button",
       text: "extra args",
@@ -427,9 +453,9 @@ describe("QQAdapter interaction events", () => {
       }),
     );
 
-    expect(response.status).toBe(200);
-    expect(processAction).toHaveBeenCalledTimes(1);
-    expect(processAction.mock.calls[0]?.[0]).toMatchObject({
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(processAction.mock.callCount(), 1);
+    assertMatchObject(processAction.mock.calls[0]?.arguments[0], {
       actionId: "approve",
       messageId: "message-1",
       threadId: "qq:c2c/user-openid",
@@ -446,11 +472,11 @@ describe("QQAdapter interaction events", () => {
       tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
     });
     const order: string[] = [];
-    const processAction = vi.fn(() => {
+    const processAction = mock.fn(() => {
       order.push("action");
     });
     await adapter.initialize({ processAction } as unknown as ChatInstance);
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input);
       if (url === "https://tokens.example.test/app/getAppAccessToken") {
         return Response.json({
@@ -466,7 +492,7 @@ describe("QQAdapter interaction events", () => {
       }
       return Response.json({ code: 404 }, { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
 
     const response = await adapter.handleWebhook(
       new Request("https://example.test/webhooks/qq", {
@@ -493,8 +519,8 @@ describe("QQAdapter interaction events", () => {
       }),
     );
 
-    expect(response.status).toBe(200);
-    expect(order).toEqual(["ack", "action"]);
+    assert.strictEqual(response.status, 200);
+    assert.deepStrictEqual(order, ["ack", "action"]);
   });
 });
 
@@ -503,7 +529,7 @@ describe("QQAdapter outbound rich messages", () => {
     const adapter = createAdapter({
       tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
     });
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input);
       if (url === "https://tokens.example.test/app/getAppAccessToken") {
         return Response.json({
@@ -519,13 +545,13 @@ describe("QQAdapter outbound rich messages", () => {
       }
       return Response.json({ code: 404 }, { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
 
     await adapter.postMessage("qq:c2c/user-openid", {
       markdown: "**hello**",
     });
 
-    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
       markdown: {
         content: "**hello**",
       },
@@ -537,7 +563,7 @@ describe("QQAdapter outbound rich messages", () => {
     const adapter = createAdapter({
       tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
     });
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input);
       if (url === "https://tokens.example.test/app/getAppAccessToken") {
         return Response.json({
@@ -553,7 +579,7 @@ describe("QQAdapter outbound rich messages", () => {
       }
       return Response.json({ code: 404 }, { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
 
     await adapter.postMessage(
       "qq:c2c/user-openid",
@@ -577,8 +603,8 @@ describe("QQAdapter outbound rich messages", () => {
       }),
     );
 
-    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
-    expect(body).toMatchObject({
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? ""));
+    assertMatchObject(body, {
       keyboard: {
         content: {
           rows: [
@@ -621,15 +647,21 @@ describe("QQAdapter outbound rich messages", () => {
       },
       msg_type: 2,
     });
-    expect(body.markdown.content).toContain("Order #123");
-    expect(body.markdown.content).toContain("Choose an action");
+    assert.ok(
+      (body.markdown as { content: string }).content.includes("Order #123"),
+      'markdown.content includes "Order #123"',
+    );
+    assert.ok(
+      (body.markdown as { content: string }).content.includes("Choose an action"),
+      'markdown.content includes "Choose an action"',
+    );
   });
 
   it("streams by collecting chunks and posting once because QQ does not support editMessage", async () => {
     const adapter = createAdapter({
       tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
     });
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input);
       if (url === "https://tokens.example.test/app/getAppAccessToken") {
         return Response.json({
@@ -645,7 +677,7 @@ describe("QQAdapter outbound rich messages", () => {
       }
       return Response.json({ code: 404 }, { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
 
     async function* chunks() {
       yield "hello ";
@@ -657,8 +689,8 @@ describe("QQAdapter outbound rich messages", () => {
 
     await adapter.stream("qq:c2c/user-openid", chunks());
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+    assert.strictEqual(fetchMock.mock.callCount(), 2);
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
       content: "hello **world**",
       msg_type: 0,
     });
@@ -695,7 +727,7 @@ describe("QQAdapter outbound passive context", () => {
       }),
     );
 
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://tokens.example.test/app/getAppAccessToken") {
         return Response.json({
@@ -711,21 +743,21 @@ describe("QQAdapter outbound passive context", () => {
       }
       return Response.json({ code: 404 }, { status: 404 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
 
     await adapter.postMessage("qq:c2c/user-openid", "reply 1");
     await adapter.postMessage("qq:c2c/user-openid", "reply 2");
 
-    const firstSendBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
-    const secondSendBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body));
+    const firstSendBody = JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? ""));
+    const secondSendBody = JSON.parse(String(fetchMock.mock.calls[2]?.arguments[1]?.body ?? ""));
 
-    expect(firstSendBody).toEqual({
+    assert.deepStrictEqual(firstSendBody, {
       content: "reply 1",
       msg_id: "message-1",
       msg_seq: 1,
       msg_type: 0,
     });
-    expect(secondSendBody).toEqual({
+    assert.deepStrictEqual(secondSendBody, {
       content: "reply 2",
       msg_id: "message-1",
       msg_seq: 2,
