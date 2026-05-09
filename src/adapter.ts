@@ -21,8 +21,6 @@ import type {
   WebhookOptions,
 } from "chat";
 import { ChatError, ConsoleLogger, Message, NotImplementedError, RateLimitError, isCardElement } from "chat";
-import type { KeyObject } from "node:crypto";
-import { createPrivateKey, createPublicKey, randomUUID, sign, verify } from "node:crypto";
 import {
   APP_ID_HEADER,
   ACTION_EVENT_TYPES,
@@ -65,10 +63,14 @@ import type {
 import {
   buildOutboundContent,
   assertNever,
+  bytesToHex,
+  concatBytes,
   createBotSeed,
+  hexToBytes,
   isValidationPayload,
   parseCursor,
   parseQQTimestamp,
+  stringToBytes,
   toChatError,
 } from "./utils.js";
 
@@ -84,8 +86,8 @@ interface PassiveContext {
 }
 
 interface SigningKeys {
-  privateKey: KeyObject;
-  publicKey: KeyObject;
+  privateKey: CryptoKey;
+  publicKey: CryptoKey;
 }
 
 interface ParsedMessageEvent {
@@ -108,7 +110,10 @@ interface SignatureCheckResult {
   reason?: string;
 }
 
-const ED25519_PRIVATE_KEY_DER_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
+const ED25519_PRIVATE_KEY_DER_PREFIX = new Uint8Array([
+  0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70,
+  0x04, 0x22, 0x04, 0x20,
+]);
 const QQ_SIGNATURE_SIZE = 64;
 
 /**
@@ -347,7 +352,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       }
 
       if (this.config.verifySignature !== false) {
-        const signatureCheck = this.verifyWebhookSignature(request.headers, rawBody);
+        const signatureCheck = await this.verifyWebhookSignature(request.headers, rawBody);
         if (!signatureCheck.ok) {
           this.logger.warn("QQ webhook signature validation failed", {
             reason: signatureCheck.reason,
@@ -453,7 +458,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
         userName: raw.author?.username ?? raw.author?.nick ?? authorId,
       },
       formatted: this.converter.toAst(content),
-      id: raw.id ?? raw.msg_id ?? randomUUID(),
+      id: raw.id ?? raw.msg_id ?? crypto.randomUUID(),
       metadata: {
         dateSent,
         edited: Boolean(editedAt),
@@ -484,7 +489,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       _chat_thread_type: thread.type,
       author: sentRaw.author ?? this.getOutboundAuthor(thread.type),
       content: sentRaw.content ?? payload.content ?? payload.markdown?.content,
-      id: sentRaw.id ?? randomUUID(),
+      id: sentRaw.id ?? crypto.randomUUID(),
       msg_id: sentRaw.msg_id ?? payload.msg_id,
       timestamp: sentRaw.timestamp ?? new Date().toISOString(),
     };
@@ -612,11 +617,13 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       );
     }
 
-    const signature = sign(
-      null,
-      Buffer.from(`${payload.d.event_ts}${payload.d.plain_token}`, "utf8"),
-      this.getSigningKeys().privateKey,
-    ).toString("hex");
+    const keys = await this.getSigningKeys();
+    const signatureBytes = await crypto.subtle.sign(
+      "Ed25519",
+      keys.privateKey,
+      new Uint8Array(stringToBytes(`${payload.d.event_ts}${payload.d.plain_token}`)),
+    );
+    const signature = bytesToHex(new Uint8Array(signatureBytes));
     this.logger.debug("QQ webhook validation challenge signed", {
       eventTs: payload.d.event_ts,
       plainTokenLength: payload.d.plain_token.length,
@@ -631,7 +638,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     );
   }
 
-  private verifyWebhookSignature(headers: Headers, rawBody: string): SignatureCheckResult {
+  private async verifyWebhookSignature(headers: Headers, rawBody: string): Promise<SignatureCheckResult> {
     const signatureHex = headers.get(SIGNATURE_HEADER);
     const timestampHeader = headers.get(SIGNATURE_TIMESTAMP_HEADER);
     if (!signatureHex || !timestampHeader) {
@@ -666,7 +673,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
         };
       }
 
-      const signature = Buffer.from(signatureHex, "hex");
+      const signature = hexToBytes(signatureHex);
       if (signature.length !== QQ_SIGNATURE_SIZE || (signature[QQ_SIGNATURE_SIZE - 1] & 0xe0) !== 0) {
         return {
           ok: false,
@@ -674,11 +681,12 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
         };
       }
 
-      const valid = verify(
-        null,
-        Buffer.from(`${timestampHeader}${rawBody}`, "utf8"),
-        this.getSigningKeys().publicKey,
-        signature,
+      const keys = await this.getSigningKeys();
+      const valid = await crypto.subtle.verify(
+        "Ed25519",
+        keys.publicKey,
+        new Uint8Array(signature),
+        new Uint8Array(stringToBytes(`${timestampHeader}${rawBody}`)),
       );
       if (!valid) {
         return {
@@ -715,7 +723,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     );
   }
 
-  private getSigningKeys(): SigningKeys {
+  private async getSigningKeys(): Promise<SigningKeys> {
     if (this.signingKeysCache) {
       return this.signingKeysCache;
     }
@@ -723,12 +731,25 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     const seed = createBotSeed(
       this.config.botSecret?.trim() || this.config.clientSecret,
     );
-    const privateKey = createPrivateKey({
-      format: "der",
-      key: Buffer.concat([ED25519_PRIVATE_KEY_DER_PREFIX, seed]),
-      type: "pkcs8",
-    });
-    const publicKey = createPublicKey(privateKey);
+
+    const pkcs8Der = new Uint8Array(concatBytes(ED25519_PRIVATE_KEY_DER_PREFIX, seed));
+    const privateKey = await crypto.subtle.importKey(
+      "pkcs8",
+      pkcs8Der,
+      "Ed25519",
+      true,
+      ["sign"],
+    );
+
+    const jwk = await crypto.subtle.exportKey("jwk", privateKey);
+    const publicKey = await crypto.subtle.importKey(
+      "jwk",
+      { kty: "OKP", crv: "Ed25519", x: jwk.x!, ext: true },
+      "Ed25519",
+      false,
+      ["verify"],
+    );
+
     this.signingKeysCache = { privateKey, publicKey };
     return this.signingKeysCache;
   }
