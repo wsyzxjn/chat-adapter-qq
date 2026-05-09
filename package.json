@@ -16,8 +16,9 @@
     "dist"
   ],
   "scripts": {
-    "build": "node ./node_modules/tsup/dist/cli-default.js",
-    "dev": "node ./node_modules/tsup/dist/cli-default.js --watch",
+    "build": "tsup",
+    "build:production": "NODE_ENV=production tsup",
+    "dev": "tsup --watch",
     "test": "node ./node_modules/vitest/vitest.mjs run",
     "pretest:bot": "pnpm run build",
     "test:coverage": "node ./node_modules/vitest/vitest.mjs run --coverage",
