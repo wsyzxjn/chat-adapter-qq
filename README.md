@@ -4,7 +4,7 @@
 
 ## 功能概览
 
-- 支持 QQ 私聊（C2C）和群聊消息接收（Webhook）
+- 支持 QQ 私聊（C2C）和群聊消息接收（Webhook / Socket Mode）
 - 支持文本、QQ 原生 Markdown、Markdown Keyboard 按钮消息发送
 - 支持按钮回调事件映射到 `chat.onAction`
 - 支持 `chat.onDirectMessage`、`chat.openDM` 和 DM fallback ephemeral
@@ -60,6 +60,40 @@ export async function POST(request: Request): Promise<Response> {
 }
 ```
 
+## Socket Mode
+
+如果部署环境适合长驻进程，也可以像官方 Slack 适配器一样使用 Socket Mode，由适配器直接连接 QQ Gateway：
+
+```ts
+import { Chat } from "chat";
+import { createMemoryState } from "@chat-adapter/state-memory";
+import { createQQAdapter, QQ_INTENTS } from "@amatsuka/chat-adapter-qq";
+
+const qq = createQQAdapter({
+  appId: process.env.QQ_APP_ID!,
+  clientSecret: process.env.QQ_CLIENT_SECRET!,
+  mode: "socket",
+  socketMode: {
+    intents: QQ_INTENTS.GROUP_AND_C2C_EVENT | QQ_INTENTS.INTERACTION,
+    shard: [0, 1],
+  },
+});
+
+const bot = new Chat({
+  userName: "my-qq-bot",
+  adapters: { qq },
+  state: createMemoryState(),
+});
+
+await bot.initialize();
+```
+
+`mode: "socket"` 会在 `bot.initialize()` 时启动 WebSocket；`bot.shutdown()` 会调用适配器的 `disconnect()` 并关闭连接。需要自己管理 WebSocket 时，也可以连接后把 QQ payload 交给：
+
+```ts
+await qq.handleSocketModePayload(payload);
+```
+
 ## 配置项
 
 日常接入只需要 `appId` 和 `clientSecret`。其他配置主要用于 Chat SDK 展示、本地测试或非标准部署。
@@ -70,6 +104,7 @@ export async function POST(request: Request): Promise<Response> {
 | --- | --- | --- |
 | `appId` | 是 | QQ 机器人应用 ID |
 | `clientSecret` | 是 | QQ 控制台里的密钥，用于获取 OpenAPI Access Token |
+| `mode` | 否 | 入站模式：`webhook` 或 `socket`，默认 `webhook` |
 | `userName` | 否 | 机器人用户名，默认 `qq-bot` |
 
 ### 高级配置
@@ -84,6 +119,7 @@ export async function POST(request: Request): Promise<Response> {
 | `sandbox` | `false` | 是否走沙箱 OpenAPI 域名 |
 | `apiBaseUrl` | `https://api.sgroup.qq.com` | 自定义 OpenAPI Base URL，主要用于测试或代理 |
 | `tokenEndpoint` | `https://bots.qq.com/app/getAppAccessToken` | 自定义 token 获取地址，主要用于测试或代理 |
+| `socketMode` | 无 | Socket Mode 配置，支持 `intents`、`shard`、`url` 等 |
 
 安全相关行为默认遵循 QQ Webhook 要求：校验签名、校验 `X-Bot-Appid`，并启用 300 秒重放窗口。测试或特殊代理链路需要覆盖时，可查看 `QQAdapterConfig` 类型。
 
@@ -124,6 +160,7 @@ qq:guild/<guild_id>/<channel_id>   # 频道场景（预留）
 | Chat SDK 能力 | QQ 适配器行为 |
 | --- | --- |
 | `bot.webhooks.qq` | 支持 Webhook 模式 |
+| `qq.startSocketMode` / `qq.stopSocketMode` | 支持 Socket Mode |
 | `onDirectMessage` / `onNewMention` / `onSubscribedMessage` / `onNewMessage` | 支持，QQ 消息会映射为标准 `Message` |
 | `onSlashCommand` | 支持，基于 Chat SDK 标准 slash command 事件 |
 | `onAction` | 支持 QQ Markdown Keyboard 按钮回调 |
@@ -190,6 +227,10 @@ pnpm run build
 | `QQ_VERIFY_SIGNATURE` | 否 | 默认 `true` |
 | `QQ_REQUIRE_APP_ID_HEADER` | 否 | 默认 `true` |
 | `QQ_SANDBOX` | 否 | `true` 时走沙箱 |
+| `QQ_MODE` | 否 | `socket` / `websocket` / `ws` 时使用 Socket Mode；默认 Webhook |
+| `QQ_SOCKET_MODE_INTENTS` | 否 | 自定义 Gateway intents 数值 |
+| `QQ_SOCKET_MODE_SHARD` | 否 | 自定义分片，格式如 `0,1` |
+| `QQ_SOCKET_MODE_URL` | 否 | 自定义 WSS 地址；默认自动调用 `/gateway/bot` 获取 |
 | `QQ_STRICT_WEBHOOK_EVENTS` | 否 | `true` 时未支持事件返回 400 |
 | `QQ_DEBUG_WEBHOOK` | 否 | `true` 时测试服务输出 webhook 调试日志 |
 
@@ -205,6 +246,29 @@ pnpm run test:bot
 
 ```txt
 https://<your-public-domain>/webhooks/qq
+```
+
+### 启动 Socket Mode 测试 Bot
+
+如果 WebSocket 使用另一套机器人配置，可以单独创建 `.env.ws.local`，然后运行：
+
+```bash
+pnpm run test:bot:ws
+```
+
+`test:bot:ws` 会读取 `.env.ws.local`，并强制设置 `QQ_MODE=ws`。`.env.ws.local` 至少需要：
+
+```env
+QQ_APP_ID=
+QQ_CLIENT_SECRET=
+```
+
+可选项：
+
+```env
+QQ_SOCKET_MODE_INTENTS=
+QQ_SOCKET_MODE_SHARD=0,1
+QQ_SOCKET_MODE_URL=
 ```
 
 ## 参考

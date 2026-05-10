@@ -25,6 +25,7 @@
     "test:coverage": "node --test --test-coverage test/*.test.*",
     "test:watch": "node --test --watch test/*.test.*",
     "test:bot": "node --env-file=.env.local --experimental-strip-types test/server.mjs",
+    "test:bot:ws": "QQ_MODE=ws node --env-file=.env.ws.local --experimental-strip-types test/server.mjs",
     "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
     "clean": "rm -rf dist"
   },

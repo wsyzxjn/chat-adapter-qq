@@ -7,6 +7,21 @@ export const CALLBACK_ACK_OPCODE = 12;
 /** Webhook callback validation opcode. */
 export const CALLBACK_VALIDATION_OPCODE = 13;
 
+/** Gateway heartbeat opcode. */
+export const GATEWAY_HEARTBEAT_OPCODE = 1;
+/** Gateway identify opcode. */
+export const GATEWAY_IDENTIFY_OPCODE = 2;
+/** Gateway resume opcode. */
+export const GATEWAY_RESUME_OPCODE = 6;
+/** Gateway reconnect opcode. */
+export const GATEWAY_RECONNECT_OPCODE = 7;
+/** Gateway invalid-session opcode. */
+export const GATEWAY_INVALID_SESSION_OPCODE = 9;
+/** Gateway hello opcode. */
+export const GATEWAY_HELLO_OPCODE = 10;
+/** Gateway heartbeat ACK opcode. */
+export const GATEWAY_HEARTBEAT_ACK_OPCODE = 11;
+
 /** QQ OpenAPI base URL (production). */
 export const DEFAULT_API_BASE_URL = "https://api.sgroup.qq.com";
 /** QQ OpenAPI base URL (sandbox). */
@@ -17,6 +32,24 @@ export const DEFAULT_TOKEN_ENDPOINT = "https://bots.qq.com/app/getAppAccessToken
 export const DEFAULT_FETCH_LIMIT = 50;
 /** Per-thread in-memory message cache cap. */
 export const MAX_CACHE_MESSAGES_PER_THREAD = 200;
+
+/** QQ gateway event intent bit values. */
+export const QQ_INTENTS = {
+  AUDIO_ACTION: 1 << 29,
+  DIRECT_MESSAGE: 1 << 12,
+  FORUMS_EVENT: 1 << 28,
+  GROUP_AND_C2C_EVENT: 1 << 25,
+  GUILDS: 1 << 0,
+  GUILD_MEMBERS: 1 << 1,
+  GUILD_MESSAGES: 1 << 9,
+  GUILD_MESSAGE_REACTIONS: 1 << 10,
+  INTERACTION: 1 << 26,
+  MESSAGE_AUDIT: 1 << 27,
+  PUBLIC_GUILD_MESSAGES: 1 << 30,
+} as const;
+
+/** Default gateway intents for this adapter's current C2C/GROUP scope. */
+export const DEFAULT_GATEWAY_INTENTS = QQ_INTENTS.GROUP_AND_C2C_EVENT | QQ_INTENTS.INTERACTION;
 
 /** QQ webhook signature header. */
 export const SIGNATURE_HEADER = "X-Signature-Ed25519";

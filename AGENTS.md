@@ -5,8 +5,8 @@
 ## 1. 项目目标
 
 - 提供基于 `chat` SDK 的 QQ 适配器
-- 当前范围：QQ API v2 + Webhook 模式
-- 当前支持：`C2C` 私聊、`GROUP` 群聊（不含 WebSocket 路径）
+- 当前范围：QQ API v2 + Webhook 模式 + Socket Mode
+- 当前支持：`C2C` 私聊、`GROUP` 群聊
 
 ## 2. 目录与入口
 
@@ -41,7 +41,20 @@
 - 被动上下文（`msg_id/msg_seq/event_id`）从入站消息缓存并在发送时自动带上
 - 错误分类仅基于 HTTP 状态码 + QQ 返回错误码（`code/errcode`），禁止使用错误文案关键词匹配
 
-### 3.3 线程 ID
+### 3.3 Socket Mode
+
+- `mode="socket"` 时由适配器在 `initialize()` 后启动 QQ Gateway WebSocket 连接
+- 也允许宿主自行维护 WebSocket，并调用 `handleSocketModePayload(payload)` 投递 QQ payload
+- Webhook 与 Socket Mode 的 `op=0 Dispatch` 必须复用同一套事件解析/派发逻辑
+- Gateway 必须处理：
+  - `op=10` Hello 后发送心跳与 Identify/Resume
+  - `op=1` Heartbeat / `op=11` Heartbeat ACK
+  - `op=7` Reconnect
+  - `op=9` Invalid Session
+- 默认 intents 只覆盖当前范围：`GROUP_AND_C2C_EVENT | INTERACTION`
+- `disconnect()` 必须关闭 Socket Mode 连接和定时器
+
+### 3.4 线程 ID
 
 当前格式：
 

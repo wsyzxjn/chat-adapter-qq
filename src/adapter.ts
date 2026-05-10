@@ -35,9 +35,11 @@ import {
   type QQFeature,
 } from "./constants";
 import { QQFormatConverter } from "./format-converter.js";
+import { QQGatewayClient } from "./gateway.js";
 import type {
   QQAccessTokenResponse,
   QQAdapterConfig,
+  QQGatewayBotResponse,
   QQIncomingMessage,
   QQInteractionPayload,
   QQPlatformEvent,
@@ -45,6 +47,7 @@ import type {
   QQPlatformEventType,
   QQRawMessage,
   QQSendMessageRequest,
+  QQSocketModeOptions,
   QQThreadType,
   QQThreadId,
   QQWebhookPayload,
@@ -114,6 +117,8 @@ interface SignatureCheckResult {
   reason?: string;
 }
 
+type DispatchProcessResult = "handled" | "ignored" | "not_initialized" | "unsupported";
+
 const ED25519_PRIVATE_KEY_DER_PREFIX = new Uint8Array([
   0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70,
   0x04, 0x22, 0x04, 0x20,
@@ -145,6 +150,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   private readonly messageCache = new Map<string, Message<QQRawMessage>[]>();
   private readonly passiveContextByThread = new Map<string, PassiveContext>();
   private accessTokenCache: AccessTokenCache | null = null;
+  private gatewayClient: QQGatewayClient | null = null;
   private signingKeysCache: SigningKeys | null = null;
 
   constructor(config: QQAdapterConfig) {
@@ -164,6 +170,50 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
 
   async initialize(chat: ChatInstance): Promise<void> {
     this.chat = chat;
+    if (this.config.mode === "socket") {
+      await this.startSocketMode();
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    await this.stopSocketMode();
+  }
+
+  async startSocketMode(options?: QQSocketModeOptions): Promise<void> {
+    if (this.gatewayClient?.isActive) {
+      this.logger.debug("QQ gateway already started");
+      return;
+    }
+
+    this.gatewayClient = new QQGatewayClient({
+      getGatewayInfo: () => this.fetchGatewayBot(),
+      getToken: () => this.getAccessToken(),
+      logger: this.logger,
+      onDispatch: (payload) => this.handleSocketModePayload(payload),
+      options: {
+        ...this.config.socketMode,
+        ...options,
+      },
+    });
+    await this.gatewayClient.start();
+  }
+
+  async stopSocketMode(): Promise<void> {
+    await this.gatewayClient?.stop();
+    this.gatewayClient = null;
+  }
+
+  async handleSocketModePayload(payload: QQWebhookPayload<unknown>, options?: WebhookOptions): Promise<void> {
+    if (payload.op !== CALLBACK_DISPATCH_OPCODE) {
+      this.logger.debug("Ignoring non-dispatch QQ gateway payload", {
+        op: payload.op,
+        s: payload.s,
+        t: payload.t,
+      });
+      return;
+    }
+
+    await this.processDispatchPayload(payload, options, "socket");
   }
 
   onEvent(handler: QQPlatformEventHandler): () => void;
@@ -321,74 +371,17 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
         return this.createCallbackAckResponse(payload.s);
       }
 
-      const event = this.extractMessageEvent(payload);
-      if (event) {
-        if (!this.chat) {
-          this.logger.error("QQ adapter received webhook before initialize()");
-          return this.createWebhookErrorResponse(500, "ADAPTER_NOT_INITIALIZED", "Adapter is not initialized.");
-        }
-
-        const message = this.parseMessage(event.raw);
-        this.cacheMessage(message);
-        this.updatePassiveContext(event.threadId, event.raw);
-        if (this.processSlashCommand(event.threadId, message, options)) {
-          return this.createCallbackAckResponse(payload.s);
-        }
-        this.chat.processMessage(this, event.threadId, message, options);
-        return this.createCallbackAckResponse(payload.s);
+      const result = await this.processDispatchPayload(payload, options, "webhook");
+      if (result === "not_initialized") {
+        return this.createWebhookErrorResponse(500, "ADAPTER_NOT_INITIALIZED", "Adapter is not initialized.");
       }
-
-      const action = this.extractActionEvent(payload);
-      if (action) {
-        if (!this.chat) {
-          this.logger.error("QQ adapter received webhook before initialize()");
-          return this.createWebhookErrorResponse(500, "ADAPTER_NOT_INITIALIZED", "Adapter is not initialized.");
-        }
-
-        const thread = this.decodeThreadId(action.threadId);
-        this.updatePassiveContext(action.threadId, {
-          _chat_thread_id: toThreadStorageId(thread),
-          _chat_thread_type: thread.type,
-          event_id: payload.id,
-        });
-        await this.acknowledgeInteraction(action.triggerId);
-        this.chat.processAction(
-          {
-            actionId: action.actionId,
-            adapter: this,
-            messageId: action.messageId,
-            raw: action.raw,
-            threadId: action.threadId,
-            triggerId: action.triggerId,
-            user: action.user,
-            value: action.value,
-          },
-          options,
-        );
-        return this.createCallbackAckResponse(payload.s);
-      }
-
-      const platformEvent = this.extractPlatformEvent(payload);
-      if (platformEvent) {
-        this.dispatchPlatformEvent(platformEvent, options);
-        return this.createCallbackAckResponse(payload.s);
-      }
-
-      {
-        this.logger.info("Ignoring unsupported QQ webhook dispatch event", {
-          eventId: payload.id,
-          op: payload.op,
+      if (result === "unsupported" && this.config.strictWebhookEvents) {
+        return this.createWebhookErrorResponse(400, "UNSUPPORTED_EVENT", "Unsupported webhook dispatch event.", {
+          eventId: this.resolvePayloadEventId(payload),
           type: payload.t ?? "unknown",
         });
-
-        if (this.config.strictWebhookEvents) {
-          return this.createWebhookErrorResponse(400, "UNSUPPORTED_EVENT", "Unsupported webhook dispatch event.", {
-            eventId: payload.id,
-            type: payload.t ?? "unknown",
-          });
-        }
-        return this.createCallbackAckResponse(payload.s);
       }
+      return this.createCallbackAckResponse(payload.s);
     } catch (error) {
       this.logger.error("QQ webhook handling failed", error);
       return this.createWebhookErrorResponse(500, "WEBHOOK_INTERNAL_ERROR", "Internal webhook handler error.");
@@ -564,6 +557,82 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     };
   }
 
+  private async processDispatchPayload(
+    payload: QQWebhookPayload<unknown>,
+    options: WebhookOptions | undefined,
+    source: "socket" | "webhook",
+  ): Promise<DispatchProcessResult> {
+    const event = this.extractMessageEvent(payload);
+    if (event) {
+      if (!this.chat) {
+        this.logger.error(`QQ adapter received ${source} event before initialize()`);
+        return "not_initialized";
+      }
+
+      const message = this.parseMessage(event.raw);
+      this.cacheMessage(message);
+      this.updatePassiveContext(event.threadId, event.raw);
+      if (this.processSlashCommand(event.threadId, message, options)) {
+        return "handled";
+      }
+      this.chat.processMessage(this, event.threadId, message, options);
+      return "handled";
+    }
+
+    const action = this.extractActionEvent(payload);
+    if (action) {
+      if (!this.chat) {
+        this.logger.error(`QQ adapter received ${source} event before initialize()`);
+        return "not_initialized";
+      }
+
+      const thread = this.decodeThreadId(action.threadId);
+      this.updatePassiveContext(action.threadId, {
+        _chat_thread_id: toThreadStorageId(thread),
+        _chat_thread_type: thread.type,
+        event_id: this.resolvePayloadEventId(payload),
+      });
+      await this.acknowledgeInteraction(action.triggerId);
+      this.chat.processAction(
+        {
+          actionId: action.actionId,
+          adapter: this,
+          messageId: action.messageId,
+          raw: action.raw,
+          threadId: action.threadId,
+          triggerId: action.triggerId,
+          user: action.user,
+          value: action.value,
+        },
+        options,
+      );
+      return "handled";
+    }
+
+    const platformEvent = this.extractPlatformEvent(payload);
+    if (platformEvent) {
+      this.dispatchPlatformEvent(platformEvent, options);
+      return "handled";
+    }
+
+    if (payload.t === "READY" || payload.t === "RESUMED") {
+      this.logger.debug("Ignoring QQ gateway lifecycle event", {
+        eventId: this.resolvePayloadEventId(payload),
+        source,
+        type: payload.t,
+      });
+      return "ignored";
+    }
+
+    this.logger.info("Ignoring unsupported QQ dispatch event", {
+      eventId: this.resolvePayloadEventId(payload),
+      op: payload.op,
+      source,
+      type: payload.t ?? "unknown",
+    });
+    return "unsupported";
+  }
+
   private async handleValidationChallenge(payload: QQWebhookPayload<unknown>): Promise<Response> {
     if (!isValidationPayload(payload.d)) {
       return this.createWebhookErrorResponse(
@@ -715,6 +784,10 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     return Response.json({ d: data, op: CALLBACK_ACK_OPCODE });
   }
 
+  private resolvePayloadEventId(payload: QQWebhookPayload<unknown>): string {
+    return payload.id ?? `${payload.t ?? "event"}:${payload.s ?? "unknown"}`;
+  }
+
   private extractMessageEvent(payload: QQWebhookPayload<unknown>): ParsedMessageEvent | null {
     if (!payload.t || !MESSAGE_EVENT_TYPES.has(payload.t)) {
       return null;
@@ -766,7 +839,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       this.logger.warn("QQ interaction event is missing button action data", {
         buttonDataPresent: Boolean(resolved?.button_data),
         buttonIdPresent: Boolean(resolved?.button_id),
-        interactionId: raw.id ?? payload.id,
+        interactionId: raw.id ?? this.resolvePayloadEventId(payload),
       });
       return null;
     }
@@ -774,10 +847,10 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     const authorId = this.resolveInteractionAuthorId(raw);
     return {
       actionId,
-      messageId: resolved?.message_id ?? raw.message_id ?? payload.id,
+      messageId: resolved?.message_id ?? raw.message_id ?? this.resolvePayloadEventId(payload),
       raw,
       threadId: this.encodeThreadId(thread),
-      triggerId: raw.id ?? payload.id,
+      triggerId: raw.id ?? this.resolvePayloadEventId(payload),
       user: {
         fullName: authorId,
         isBot: false,
@@ -803,14 +876,14 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
         this.updatePassiveContext(threadId, {
           _chat_thread_id: toThreadStorageId(thread),
           _chat_thread_type: thread.type,
-          event_id: payload.id,
+          event_id: this.resolvePayloadEventId(payload),
         });
       }
     }
 
     return {
       data: payload.d,
-      eventId: payload.id,
+      eventId: this.resolvePayloadEventId(payload),
       payload,
       threadId,
       type: payload.t as QQPlatformEventType,
@@ -1059,6 +1132,10 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  private async fetchGatewayBot(): Promise<QQGatewayBotResponse> {
+    return this.apiRequest<QQGatewayBotResponse>("/gateway/bot", { method: "GET" });
   }
 
   private async apiRequest<T = Record<string, unknown>>(

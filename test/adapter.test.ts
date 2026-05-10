@@ -97,6 +97,37 @@ afterEach(() => {
   globalThis.fetch = _fetch;
 });
 
+class MockSocketModeSocket {
+  readonly sent: string[] = [];
+  private readonly listeners = new Map<string, Array<(event: Event | MessageEvent) => void>>();
+
+  addEventListener(type: "close" | "error" | "message" | "open", listener: (event: Event | MessageEvent) => void): void {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  close(): void {
+    this.emit("close", new Event("close"));
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  emit(type: "close" | "error" | "message" | "open", event: Event | MessageEvent): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event);
+    }
+  }
+}
+
+async function nextTick(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
 function assertMatchObject(actual: unknown, expected: Record<string, unknown>, path = ""): void {
   for (const key of Object.keys(expected)) {
     const currentPath = path ? `${path}.${key}` : key;
@@ -763,5 +794,110 @@ describe("QQAdapter outbound passive context", () => {
       msg_seq: 2,
       msg_type: 0,
     });
+  });
+});
+
+describe("QQAdapter socket mode", () => {
+  it("dispatches QQ socket mode message events through Chat SDK", async () => {
+    const adapter = createAdapter();
+    const processMessage = await initializeWithProcessSpy(adapter);
+
+    await (adapter as QQAdapter & {
+      handleSocketModePayload: (payload: Record<string, unknown>) => Promise<void>;
+    }).handleSocketModePayload({
+      d: {
+        author: {
+          user_openid: "user-openid",
+        },
+        content: "hello from socket mode",
+        id: "message-1",
+        timestamp: "2026-05-10T12:00:00+08:00",
+      },
+      op: 0,
+      s: 1,
+      t: "C2C_MESSAGE_CREATE",
+    });
+
+    assert.strictEqual(processMessage.mock.callCount(), 1);
+    assert.strictEqual(processMessage.mock.calls[0]?.arguments[1], "qq:c2c/user-openid");
+    assertMatchObject(processMessage.mock.calls[0]?.arguments[2], {
+      id: "message-1",
+      text: "hello from socket mode",
+      threadId: "qq:c2c/user-openid",
+    });
+  });
+
+  it("connects in socket mode and identifies after hello", async () => {
+    const sockets: MockSocketModeSocket[] = [];
+    const adapter = createAdapter({
+      socketMode: {
+        reconnect: false,
+        webSocketFactory: (url: string) => {
+          assert.strictEqual(url, "wss://gateway.example.test/websocket");
+          const socket = new MockSocketModeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      },
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    } as Partial<ConstructorParameters<typeof QQAdapter>[0]>);
+    const fetchMock = mock.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/gateway/bot") {
+        return Response.json({
+          session_start_limit: {
+            max_concurrency: 1,
+            remaining: 1000,
+            reset_after: 86400000,
+            total: 1000,
+          },
+          shards: 1,
+          url: "wss://gateway.example.test/websocket",
+        });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    const socketModeAdapter = adapter as QQAdapter & {
+      startSocketMode: () => Promise<void>;
+      stopSocketMode: () => Promise<void>;
+    };
+    const start = socketModeAdapter.startSocketMode();
+    await nextTick();
+    assert.strictEqual(sockets.length, 1);
+    sockets[0]!.emit("open", new Event("open"));
+    await start;
+
+    sockets[0]!.emit("message", { data: JSON.stringify({ d: { heartbeat_interval: 1000 }, op: 10 }) } as MessageEvent);
+    await nextTick();
+
+    assert.deepStrictEqual(sockets[0]!.sent.map((payload) => JSON.parse(payload)), [
+      {
+        d: null,
+        op: 1,
+      },
+      {
+        d: {
+          intents: (1 << 25) | (1 << 26),
+          properties: {
+            "$browser": "@amatsuka/chat-adapter-qq",
+            "$device": "@amatsuka/chat-adapter-qq",
+            "$os": process.platform,
+          },
+          shard: [0, 1],
+          token: "QQBot access-token",
+        },
+        op: 2,
+      },
+    ]);
+
+    await socketModeAdapter.stopSocketMode();
   });
 });

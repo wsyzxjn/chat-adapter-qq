@@ -161,6 +161,8 @@ server.on("error", (error) => {
   console.error("[http] server error", error);
 });
 
+await testBot.initialize();
+
 server.listen(port, host, () => {
   console.log("[http] QQ test bot started", {
     health: `http://${host}:${port}/health`,

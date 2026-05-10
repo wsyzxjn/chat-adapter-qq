@@ -32,6 +32,39 @@ export type QQThreadId = QQC2CThreadId | QQGroupThreadId | QQGuildChannelThreadI
 /** Convenience union of QQ scene type literals. */
 export type QQThreadType = QQThreadId["type"];
 
+/** Runtime transport mode used for receiving QQ events. */
+export type QQAdapterMode = "socket" | "webhook";
+
+export interface QQSocketModeWebSocket {
+  addEventListener(
+    type: "close" | "error" | "message" | "open",
+    listener: (event: Event | MessageEvent) => void,
+  ): void;
+  close(code?: number, reason?: string): void;
+  send(data: string): void;
+}
+
+export type QQSocketModeWebSocketFactory = (url: string) => QQSocketModeWebSocket;
+
+export interface QQSocketModeOptions {
+  /** Gateway identify properties. Defaults to this package name. */
+  properties?: Record<string, string>;
+  /** Automatically reconnect after gateway close/reconnect requests. Defaults to true. */
+  reconnect?: boolean;
+  /** Delay before reconnecting in milliseconds. Defaults to 1000. */
+  reconnectDelayMs?: number;
+  /** Whether to attempt opcode 6 resume when a session id is available. Defaults to true. */
+  resume?: boolean;
+  /** Gateway shard tuple. Defaults to [0, 1]. */
+  shard?: readonly [number, number];
+  /** Explicit WSS URL. When omitted, the adapter calls /gateway/bot. */
+  url?: string;
+  /** Advanced/test: custom WebSocket factory. Defaults to globalThis.WebSocket. */
+  webSocketFactory?: QQSocketModeWebSocketFactory;
+  /** Gateway event intents. Defaults to GROUP_AND_C2C_EVENT | INTERACTION. */
+  intents?: number;
+}
+
 /** QQ adapter runtime configuration. */
 export interface QQAdapterConfig {
   /** Advanced: whether to send QQ interaction ACK API calls for button events. Defaults to true. */
@@ -46,8 +79,12 @@ export interface QQAdapterConfig {
   botUserId?: string;
   /** QQ bot client secret for access token retrieval. */
   clientSecret: string;
+  /** Socket Mode connection options. */
+  socketMode?: QQSocketModeOptions;
   /** Logger implementation from Chat SDK. */
   logger?: Logger;
+  /** Event receiving mode. Defaults to webhook. */
+  mode?: QQAdapterMode;
   /** Advanced security option: whether webhook requests must include and match `X-Bot-Appid`. */
   requireAppIdHeader?: boolean;
   /** HTTP request timeout in milliseconds. */
@@ -71,7 +108,7 @@ export interface QQWebhookPayload<TData = unknown> {
   /** Event data payload. */
   d?: TData;
   /** Callback event id. */
-  id: string;
+  id?: string;
   /** Callback opcode. */
   op: number;
   /** Sequence number for callback ACK. */
@@ -272,4 +309,15 @@ export interface QQAccessTokenResponse {
   access_token: string;
   /** Token TTL in seconds. */
   expires_in: number | string;
+}
+
+export interface QQGatewayBotResponse {
+  session_start_limit?: {
+    max_concurrency: number;
+    remaining: number;
+    reset_after: number;
+    total: number;
+  };
+  shards?: number;
+  url: string;
 }

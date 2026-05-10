@@ -22,17 +22,50 @@ function envFlag(name: string, defaultValue: boolean): boolean {
   return value !== "false" && value !== "0";
 }
 
+function envNumber(name: string): number | undefined {
+  const value = optionalEnv(name);
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function envShard(name: string): readonly [number, number] | undefined {
+  const value = optionalEnv(name);
+  if (!value) {
+    return undefined;
+  }
+  const [id, count] = value.split(",").map((part) => Number(part.trim()));
+  if (!Number.isInteger(id) || !Number.isInteger(count) || count <= 0) {
+    return undefined;
+  }
+  return [id, count];
+}
+
+function resolveQQMode(): "socket" | "webhook" {
+  const value = optionalEnv("QQ_MODE")?.toLowerCase();
+  return value === "socket" || value === "websocket" || value === "ws" ? "socket" : "webhook";
+}
+
 const botUserName = optionalEnv("BOT_USERNAME") ?? "qq-test-bot";
 const qqClientSecret =
   optionalEnv("QQ_CLIENT_SECRET") ?? optionalEnv("QQ_SECRET") ?? "";
+const qqMode = resolveQQMode();
 
 const qq = createQQAdapter({
   appId: optionalEnv("QQ_APP_ID") ?? "",
   botSecret: optionalEnv("QQ_BOT_SECRET"),
   botUserId: optionalEnv("QQ_BOT_USER_ID"),
   clientSecret: qqClientSecret,
+  mode: qqMode,
   requireAppIdHeader: envFlag("QQ_REQUIRE_APP_ID_HEADER", true),
   sandbox: envFlag("QQ_SANDBOX", false),
+  socketMode: {
+    intents: envNumber("QQ_SOCKET_MODE_INTENTS"),
+    shard: envShard("QQ_SOCKET_MODE_SHARD"),
+    url: optionalEnv("QQ_SOCKET_MODE_URL"),
+  },
   strictWebhookEvents: envFlag("QQ_STRICT_WEBHOOK_EVENTS", false),
   userName: botUserName,
   verifySignature: envFlag("QQ_VERIFY_SIGNATURE", true),
