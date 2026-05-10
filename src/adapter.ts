@@ -2,11 +2,6 @@ import type {
   Adapter,
   AdapterPostableMessage,
   Author,
-  CardElement,
-  PostableAst,
-  PostableCard,
-  PostableMarkdown,
-  PostableRaw,
   ChannelInfo,
   ChatInstance,
   EmojiValue,
@@ -20,7 +15,7 @@ import type {
   ThreadInfo,
   WebhookOptions,
 } from "chat";
-import { ChatError, ConsoleLogger, Message, NotImplementedError, RateLimitError, isCardElement } from "chat";
+import { ChatError, ConsoleLogger, Message, NotImplementedError, RateLimitError } from "chat";
 import {
   APP_ID_HEADER,
   ACTION_EVENT_TYPES,
@@ -43,14 +38,8 @@ import { QQFormatConverter } from "./format-converter.js";
 import type {
   QQAccessTokenResponse,
   QQAdapterConfig,
-  QQC2CThreadId,
-  QQGroupThreadId,
-  QQGuildChannelThreadId,
   QQIncomingMessage,
   QQInteractionPayload,
-  QQKeyboardButton,
-  QQKeyboardPayload,
-  QQMessageAttachment,
   QQPlatformEvent,
   QQPlatformEventHandler,
   QQPlatformEventType,
@@ -61,7 +50,22 @@ import type {
   QQWebhookPayload,
 } from "./types.js";
 import {
-  buildOutboundContent,
+  buildMessageContentPayload,
+  getDeleteMessagePath,
+  getPostMessagePath,
+  streamChunkToText,
+  toAttachments,
+  validateMessagePayload,
+} from "./utils/message-payload.js";
+import {
+  decodeThreadId as decodeQQThreadId,
+  encodeThreadId as encodeQQThreadId,
+  fromThreadStorage,
+  getChannelName,
+  toThreadMetadata,
+  toThreadStorageId,
+} from "./utils/thread-id.js";
+import {
   assertNever,
   bytesToHex,
   concatBytes,
@@ -72,7 +76,7 @@ import {
   parseQQTimestamp,
   stringToBytes,
   toChatError,
-} from "./utils.js";
+} from "./utils/index.js";
 
 interface AccessTokenCache {
   expiresAt: number;
@@ -235,60 +239,12 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
 
   /** Encode structured QQ thread object to stable adapter thread id string. */
   encodeThreadId(thread: QQThreadId): string {
-    switch (thread.type) {
-      case "c2c":
-        return `${this.name}:c2c/${encodeURIComponent(thread.userOpenId)}`;
-      case "group":
-        return `${this.name}:group/${encodeURIComponent(thread.groupOpenId)}`;
-      case "guild_channel":
-        return `${this.name}:guild/${encodeURIComponent(thread.guildId)}/${encodeURIComponent(thread.channelId)}`;
-      default:
-        return assertNever(thread);
-    }
+    return encodeQQThreadId(this.name, thread);
   }
 
   /** Decode adapter thread id string into structured QQ scene identifiers. */
   decodeThreadId(threadId: string): QQThreadId {
-    if (!threadId.startsWith(`${this.name}:`)) {
-      throw new Error(`Invalid QQ threadId: ${threadId}`);
-    }
-
-    const suffix = threadId.slice(this.name.length + 1);
-    if (suffix.startsWith("c2c/")) {
-      const encodedId = suffix.slice("c2c/".length);
-      if (encodedId) {
-        return {
-          type: "c2c",
-          userOpenId: decodeURIComponent(encodedId),
-        };
-      }
-    }
-    if (suffix.startsWith("group/")) {
-      const encodedId = suffix.slice("group/".length);
-      if (encodedId) {
-        return {
-          groupOpenId: decodeURIComponent(encodedId),
-          type: "group",
-        };
-      }
-    }
-    if (suffix.startsWith("guild/")) {
-      const encodedIds = suffix.slice("guild/".length);
-      const slash = encodedIds.indexOf("/");
-      if (slash > 0) {
-        const guildEncoded = encodedIds.slice(0, slash);
-        const channelEncoded = encodedIds.slice(slash + 1);
-        if (guildEncoded && channelEncoded) {
-          return {
-            channelId: decodeURIComponent(channelEncoded),
-            guildId: decodeURIComponent(guildEncoded),
-            type: "guild_channel",
-          };
-        }
-      }
-    }
-
-    throw new Error(`Invalid QQ threadId: ${threadId}`);
+    return decodeQQThreadId(this.name, threadId);
   }
 
   isDM(threadId: string): boolean {
@@ -391,7 +347,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
 
         const thread = this.decodeThreadId(action.threadId);
         this.updatePassiveContext(action.threadId, {
-          _chat_thread_id: this.toThreadStorageId(thread),
+          _chat_thread_id: toThreadStorageId(thread),
           _chat_thread_type: thread.type,
           event_id: payload.id,
         });
@@ -449,7 +405,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     const editedAt = parseQQTimestamp(raw.edited_timestamp, false);
 
     return new Message({
-      attachments: this.toAttachments(raw.attachments),
+      attachments: toAttachments(raw.attachments),
       author: {
         fullName: raw.author?.username ?? raw.author?.nick ?? authorId,
         isBot: raw.author?.bot ?? "unknown",
@@ -471,11 +427,11 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   }
 
   async postMessage(threadId: string, message: AdapterPostableMessage): Promise<RawMessage<QQRawMessage>> {
-    this.validateMessagePayload(message);
+    validateMessagePayload(message);
     const thread = this.decodeThreadId(threadId);
     this.assertFeature(thread, "postMessage");
     const payload = this.buildSendPayload(threadId, message);
-    const path = this.getPostMessagePath(thread);
+    const path = getPostMessagePath(thread);
 
     const sentRaw = await this.apiRequest<QQRawMessage>(path, {
       body: JSON.stringify(payload),
@@ -485,7 +441,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     const enrichedRaw: QQRawMessage = {
       ...sentRaw,
       _chat_is_outbound: true,
-      _chat_thread_id: this.toThreadStorageId(thread),
+      _chat_thread_id: toThreadStorageId(thread),
       _chat_thread_type: thread.type,
       author: sentRaw.author ?? this.getOutboundAuthor(thread.type),
       content: sentRaw.content ?? payload.content ?? payload.markdown?.content,
@@ -506,7 +462,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   async deleteMessage(threadId: string, messageId: string): Promise<void> {
     const thread = this.decodeThreadId(threadId);
     this.assertFeature(thread, "deleteMessage");
-    const path = this.getDeleteMessagePath(thread, messageId);
+    const path = getDeleteMessagePath(thread, messageId);
     await this.apiRequest(path, { method: "DELETE" });
   }
 
@@ -542,7 +498,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   ): Promise<RawMessage<QQRawMessage>> {
     let content = "";
     for await (const chunk of textStream) {
-      content += this.streamChunkToText(chunk);
+      content += streamChunkToText(chunk);
     }
 
     return this.postMessage(threadId, content || " ");
@@ -558,7 +514,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       channelId: threadId,
       id: threadId,
       isDM: decoded.type === "c2c",
-      metadata: this.toThreadMetadata(decoded),
+      metadata: toThreadMetadata(decoded),
     };
   }
 
@@ -567,8 +523,8 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     return {
       id: channelId,
       isDM: decoded.type === "c2c",
-      metadata: this.toThreadMetadata(decoded),
-      name: this.getChannelName(decoded),
+      metadata: toThreadMetadata(decoded),
+      name: getChannelName(decoded),
     };
   }
 
@@ -776,7 +732,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     const threadId = this.encodeThreadId(thread);
     const normalizedRaw: QQRawMessage = {
       ...raw,
-      _chat_thread_id: this.toThreadStorageId(thread),
+      _chat_thread_id: toThreadStorageId(thread),
       _chat_thread_type: thread.type,
     };
 
@@ -845,7 +801,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       if (thread) {
         threadId = this.encodeThreadId(thread);
         this.updatePassiveContext(threadId, {
-          _chat_thread_id: this.toThreadStorageId(thread),
+          _chat_thread_id: toThreadStorageId(thread),
           _chat_thread_type: thread.type,
           event_id: payload.id,
         });
@@ -959,7 +915,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
 
   private resolveThreadFromRaw(raw: QQRawMessage): QQThreadId {
     if (raw._chat_thread_type && raw._chat_thread_id) {
-      return this.fromThreadStorage(raw._chat_thread_type, raw._chat_thread_id);
+      return fromThreadStorage(raw._chat_thread_type, raw._chat_thread_id);
     }
 
     const groupOpenId = raw.group_openid ?? raw.group_id;
@@ -1003,115 +959,8 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     throw new NotImplementedError(`Feature ${feature} is not supported in scene: ${thread.type}`, feature);
   }
 
-  private getPostMessagePath(thread: QQThreadId): string {
-    switch (thread.type) {
-      case "group":
-        return `/v2/groups/${encodeURIComponent(thread.groupOpenId)}/messages`;
-      case "c2c":
-        return `/v2/users/${encodeURIComponent(thread.userOpenId)}/messages`;
-      case "guild_channel":
-        throw new NotImplementedError("Guild channel postMessage is not implemented yet.", "postMessage");
-      default:
-        return assertNever(thread);
-    }
-  }
-
-  private getDeleteMessagePath(thread: QQThreadId, messageId: string): string {
-    switch (thread.type) {
-      case "group":
-        return `/v2/groups/${encodeURIComponent(thread.groupOpenId)}/messages/${encodeURIComponent(messageId)}`;
-      case "c2c":
-        return `/v2/users/${encodeURIComponent(thread.userOpenId)}/messages/${encodeURIComponent(messageId)}`;
-      case "guild_channel":
-        throw new NotImplementedError("Guild channel deleteMessage is not implemented yet.", "deleteMessage");
-      default:
-        return assertNever(thread);
-    }
-  }
-
-  private toThreadStorageId(thread: QQThreadId): string {
-    switch (thread.type) {
-      case "group":
-        return thread.groupOpenId;
-      case "c2c":
-        return thread.userOpenId;
-      case "guild_channel":
-        return `${encodeURIComponent(thread.guildId)}/${encodeURIComponent(thread.channelId)}`;
-      default:
-        return assertNever(thread);
-    }
-  }
-
-  private fromThreadStorage(type: QQThreadType, value: string): QQThreadId {
-    switch (type) {
-      case "group":
-        return { groupOpenId: value, type: "group" };
-      case "c2c":
-        return { type: "c2c", userOpenId: value };
-      case "guild_channel": {
-        const slash = value.indexOf("/");
-        if (slash <= 0) {
-          throw new Error(`Invalid stored guild channel thread id: ${value}`);
-        }
-        return {
-          channelId: decodeURIComponent(value.slice(slash + 1)),
-          guildId: decodeURIComponent(value.slice(0, slash)),
-          type: "guild_channel",
-        };
-      }
-      default:
-        return assertNever(type);
-    }
-  }
-
-  private toThreadMetadata(thread: QQThreadId): Record<string, unknown> {
-    switch (thread.type) {
-      case "group":
-        return { groupOpenId: thread.groupOpenId, type: thread.type };
-      case "c2c":
-        return { type: thread.type, userOpenId: thread.userOpenId };
-      case "guild_channel":
-        return {
-          channelId: thread.channelId,
-          guildId: thread.guildId,
-          type: thread.type,
-        };
-      default:
-        return assertNever(thread);
-    }
-  }
-
-  private getChannelName(thread: QQThreadId): string {
-    switch (thread.type) {
-      case "group":
-        return `QQ Group ${thread.groupOpenId}`;
-      case "c2c":
-        return "QQ Direct Message";
-      case "guild_channel":
-        return `QQ Guild ${thread.guildId}/${thread.channelId}`;
-      default:
-        return assertNever(thread);
-    }
-  }
-
-  private toAttachments(attachments: QQMessageAttachment[] | undefined): Message<QQRawMessage>["attachments"] {
-    if (!attachments?.length) {
-      return [];
-    }
-    return attachments.map((attachment) => ({
-      fetchData: undefined,
-      height: attachment.height,
-      mimeType: attachment.content_type,
-      name: attachment.filename,
-      size: attachment.size,
-      type: attachment.content_type?.startsWith("image/") ? "image" : "file",
-      url: attachment.url,
-      width: attachment.width,
-    }));
-  }
-
   private buildSendPayload(threadId: string, message: AdapterPostableMessage): QQSendMessageRequest {
-    const payload = this.buildMessageContentPayload(message);
+    const payload = buildMessageContentPayload(this.converter, message);
 
     const context = this.passiveContextByThread.get(threadId);
     if (context?.msgId) {
@@ -1123,202 +972,6 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     }
 
     return payload;
-  }
-
-  private buildMessageContentPayload(message: AdapterPostableMessage): QQSendMessageRequest {
-    if (typeof message === "string" || this.isPostableRaw(message)) {
-      return {
-        content: buildOutboundContent(this.converter, message),
-        msg_type: 0,
-      };
-    }
-
-    if (this.isPostableMarkdown(message) || this.isPostableAst(message)) {
-      return {
-        markdown: {
-          content: buildOutboundContent(this.converter, message),
-        },
-        msg_type: 2,
-      };
-    }
-
-    const card = this.extractCard(message);
-    if (card) {
-      const payload: QQSendMessageRequest = {
-        markdown: {
-          content: buildOutboundContent(this.converter, message),
-        },
-        msg_type: 2,
-      };
-      const keyboard = this.cardToKeyboard(card);
-      if (keyboard) {
-        payload.keyboard = keyboard;
-      }
-      return payload;
-    }
-
-    return {
-      content: buildOutboundContent(this.converter, message),
-      msg_type: 0,
-    };
-  }
-
-  private isPostableRaw(message: AdapterPostableMessage): message is PostableRaw {
-    return this.isRecord(message) && typeof message.raw === "string";
-  }
-
-  private isPostableMarkdown(message: AdapterPostableMessage): message is PostableMarkdown {
-    return this.isRecord(message) && typeof message.markdown === "string";
-  }
-
-  private isPostableAst(message: AdapterPostableMessage): message is PostableAst {
-    return this.isRecord(message) && this.isRecord(message.ast);
-  }
-
-  private isPostableCard(message: AdapterPostableMessage): message is PostableCard {
-    return this.isRecord(message) && isCardElement(message.card);
-  }
-
-  private extractCard(message: AdapterPostableMessage): CardElement | null {
-    if (isCardElement(message)) {
-      return message;
-    }
-    if (this.isPostableCard(message)) {
-      return message.card;
-    }
-    return null;
-  }
-
-  private cardToKeyboard(card: CardElement): QQKeyboardPayload | null {
-    const buttons = this.extractKeyboardButtons(card);
-    if (buttons.length === 0) {
-      return null;
-    }
-    if (buttons.length > 25) {
-      throw new ChatError("QQ keyboards support at most 25 buttons.", "INVALID_REQUEST");
-    }
-
-    const rows = [];
-    for (let index = 0; index < buttons.length; index += 5) {
-      rows.push({
-        buttons: buttons.slice(index, index + 5),
-      });
-    }
-
-    return {
-      content: {
-        rows,
-      },
-    };
-  }
-
-  private extractKeyboardButtons(card: CardElement): QQKeyboardButton[] {
-    const output: QQKeyboardButton[] = [];
-    const visit = (children: CardElement["children"]): void => {
-      for (const child of children) {
-        if (child.type === "section") {
-          visit(child.children);
-          continue;
-        }
-
-        if (child.type !== "actions") {
-          continue;
-        }
-
-        for (const action of child.children) {
-          if (action.type === "button") {
-            output.push(this.toQQCallbackButton(action.label, action.id, action.value ?? action.id, action.style));
-            continue;
-          }
-          if (action.type === "link-button") {
-            output.push(this.toQQLinkButton(action.label, action.url, action.style));
-            continue;
-          }
-
-          throw new NotImplementedError(`QQ keyboard does not support ${action.type} actions yet.`, action.type);
-        }
-      }
-    };
-
-    visit(card.children);
-    return output;
-  }
-
-  private toQQCallbackButton(
-    label: string,
-    actionId: string,
-    value: string,
-    style: QQKeyboardButton["render_data"]["style"] | "primary" | "danger" | "default" | undefined,
-  ): QQKeyboardButton {
-    return {
-      action: {
-        data: value || actionId,
-        permission: {
-          type: 2,
-        },
-        type: 1,
-        unsupport_tips: label,
-      },
-      id: actionId,
-      render_data: {
-        label,
-        style: this.toQQButtonStyle(style),
-        visited_label: label,
-      },
-    };
-  }
-
-  private toQQLinkButton(
-    label: string,
-    url: string,
-    style: QQKeyboardButton["render_data"]["style"] | "primary" | "danger" | "default" | undefined,
-  ): QQKeyboardButton {
-    return {
-      action: {
-        data: url,
-        permission: {
-          type: 2,
-        },
-        type: 0,
-      },
-      render_data: {
-        label,
-        style: this.toQQButtonStyle(style),
-        visited_label: label,
-      },
-    };
-  }
-
-  private toQQButtonStyle(style: QQKeyboardButton["render_data"]["style"] | "primary" | "danger" | "default" | undefined): number {
-    if (style === "primary") {
-      return 1;
-    }
-    return 0;
-  }
-
-  private isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null;
-  }
-
-  private streamChunkToText(chunk: string | StreamChunk): string {
-    if (typeof chunk === "string") {
-      return chunk;
-    }
-
-    switch (chunk.type) {
-      case "markdown_text":
-        return chunk.text;
-      case "task_update":
-        return [
-          `- ${chunk.title}: ${chunk.status}`,
-          chunk.details,
-          chunk.output,
-        ].filter(Boolean).join("\n");
-      case "plan_update":
-        return chunk.title;
-      default:
-        return assertNever(chunk);
-    }
   }
 
   private updatePassiveContext(threadId: string, raw: QQRawMessage): void {
@@ -1347,26 +1000,6 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       cache.splice(0, cache.length - MAX_CACHE_MESSAGES_PER_THREAD);
     }
     this.messageCache.set(message.threadId, cache);
-  }
-
-  private validateMessagePayload(message: AdapterPostableMessage): void {
-    if (typeof message === "string") {
-      return;
-    }
-
-    if ("files" in message && Array.isArray(message.files) && message.files.length > 0) {
-      throw new NotImplementedError(
-        "QQ API v2 user/group messaging currently accepts URL-based media workflows. Direct file upload is not implemented in this adapter.",
-        "files",
-      );
-    }
-
-    if ("attachments" in message && Array.isArray(message.attachments) && message.attachments.length > 0) {
-      throw new NotImplementedError(
-        "QQ adapter does not support outbound `attachments` in post payloads. Use text/card content only.",
-        "attachments",
-      );
-    }
   }
 
   private async getAccessToken(): Promise<string> {

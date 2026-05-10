@@ -1,9 +1,8 @@
-import type { AdapterPostableMessage } from "chat";
 import { ChatError, RateLimitError } from "chat";
-import { QQFormatConverter } from "./format-converter.js";
-import type { QQWebhookValidationData } from "./types.js";
+import { assertNever } from "./assert.js";
 
 type QQMappedErrorType = "AUTH_FAILED" | "NOT_FOUND" | "PERMISSION_DENIED" | "RATE_LIMIT";
+
 const QQ_ERROR_CODE_MAP = new Map<number, QQMappedErrorType>([
   [22009, "RATE_LIMIT"],
   [11241, "AUTH_FAILED"],
@@ -38,19 +37,6 @@ const QQ_ERROR_CODE_MAP = new Map<number, QQMappedErrorType>([
 interface QQParsedOpenApiError {
   code?: number;
   message?: string;
-}
-
-const EMPTY_MESSAGE_CONTENT = " ";
-
-/**
- * Render Chat SDK postable message into QQ outbound text payload.
- *
- * QQ rejects empty content, so whitespace fallback is used when rendered text
- * is blank.
- */
-export function buildOutboundContent(converter: QQFormatConverter, message: AdapterPostableMessage): string {
-  const rendered = converter.renderPostable(message).trim();
-  return rendered.length > 0 ? rendered : EMPTY_MESSAGE_CONTENT;
 }
 
 /**
@@ -100,106 +86,6 @@ export function toChatError(params: {
     return new ChatError(`${params.message} at ${params.endpoint}${detail}`, "NOT_FOUND");
   }
   return new ChatError(`${params.message} at ${params.endpoint}${detail}`, "NETWORK_ERROR");
-}
-
-/** Parse cursor token to in-memory message index. */
-export function parseCursor(cursor: string | undefined): number | null {
-  if (!cursor) {
-    return null;
-  }
-  const value = Number(cursor);
-  if (!Number.isFinite(value) || value < 0) {
-    return null;
-  }
-  return Math.floor(value);
-}
-
-/**
- * Parse QQ timestamp (seconds/milliseconds/ISO string) to Date.
- *
- * @param fallbackToNow When true, invalid or empty input falls back to `new Date()`.
- */
-export function parseQQTimestamp(value: string | undefined, fallbackToNow: true): Date;
-export function parseQQTimestamp(value: string | undefined, fallbackToNow: false): Date | null;
-export function parseQQTimestamp(value: string | undefined, fallbackToNow: boolean): Date | null {
-  if (!value) {
-    return fallbackToNow ? new Date() : null;
-  }
-
-  const asNumber = Number(value);
-  if (Number.isFinite(asNumber) && asNumber > 0) {
-    return new Date(asNumber > 10_000_000_000 ? asNumber : asNumber * 1000);
-  }
-
-  const parsed = new Date(value);
-  if (!Number.isNaN(parsed.getTime())) {
-    return parsed;
-  }
-  return fallbackToNow ? new Date() : null;
-}
-
-/**
- * Derive a deterministic 32-byte seed from bot secret for webhook challenge signing.
- */
-export function createBotSeed(secret: string): Uint8Array {
-  const source = stringToBytes(secret);
-  if (source.length === 0) {
-    throw new Error("QQ adapter secret cannot be empty.");
-  }
-  const seed = new Uint8Array(32);
-  for (let i = 0; i < seed.length; i += 1) {
-    seed[i] = source[i % source.length];
-  }
-  return seed;
-}
-
-/** Convert a UTF-8 string to Uint8Array. */
-export function stringToBytes(str: string): Uint8Array {
-  return new TextEncoder().encode(str);
-}
-
-/** Convert a hex string to Uint8Array. */
-export function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < bytes.length; i++) {
-    const byte = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-    if (Number.isNaN(byte)) {
-      throw new Error(`Invalid hex string: ${hex}`);
-    }
-    bytes[i] = byte;
-  }
-  return bytes;
-}
-
-/** Convert a Uint8Array to a hex string. */
-export function bytesToHex(bytes: Uint8Array): string {
-  let hex = "";
-  for (let i = 0; i < bytes.length; i++) {
-    hex += bytes[i].toString(16).padStart(2, "0");
-  }
-  return hex;
-}
-
-/** Concatenate two Uint8Arrays. */
-export function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const result = new Uint8Array(a.length + b.length);
-  result.set(a, 0);
-  result.set(b, a.length);
-  return result;
-}
-
-/** Runtime shape check for QQ webhook validation payload (`op=13`). */
-export function isValidationPayload(data: unknown): data is QQWebhookValidationData {
-  if (!data || typeof data !== "object") {
-    return false;
-  }
-  const payload = data as QQWebhookValidationData;
-  return typeof payload.event_ts === "string" && typeof payload.plain_token === "string";
-}
-
-/** Exhaustiveness assertion helper for discriminated unions. */
-export function assertNever(value: never): never {
-  throw new Error(`Unexpected value: ${String(value)}`);
 }
 
 function parseQQOpenApiError(responseBody: string | undefined): QQParsedOpenApiError {
