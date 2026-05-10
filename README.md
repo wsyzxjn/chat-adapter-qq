@@ -6,7 +6,7 @@ QQ 机器人开放平台 API v2 的 [Chat SDK](https://www.npmjs.com/package/cha
 
 - 接收 QQ 私聊（C2C）和群聊消息
 - 支持 Webhook 和 Socket Mode
-- 发送文本、QQ Markdown、Markdown Keyboard 按钮消息
+- 发送文本、QQ Markdown、Markdown Keyboard 按钮和 URL 媒体附件
 - 将按钮回调映射到 `chat.onAction`
 - 支持 `chat.onDirectMessage`、`chat.openDM`、消息撤回和本进程消息缓存
 - 保留 QQ 原始 payload，方便读取平台特有字段
@@ -124,6 +124,40 @@ const unsubscribe = qq.onEvent(async (event) => {
 });
 ```
 
+## QQ 专有发送
+
+通用文本、Markdown、Card 和 URL 媒体附件走 `thread.post()`：
+
+```ts
+await thread.post({
+  raw: "图片说明",
+  attachments: [
+    {
+      type: "image",
+      url: "https://example.com/image.png",
+    },
+  ],
+});
+```
+
+当前媒体附件一次发送一项，支持 `image`、`video`、`audio` 和单聊 `file`。二进制直传暂不支持。
+
+QQ 专有能力挂在适配器实例上。ARK 消息可直接调用：
+
+```ts
+await qq.postArk("qq:c2c/<openid>", {
+  template_id: 23,
+  kv: [
+    {
+      key: "#DESC#",
+      value: "机器人订阅消息",
+    },
+  ],
+});
+```
+
+Embed 在 QQ 官方 C2C/GROUP 场景下不支持，当前不适配。
+
 ## Raw Payload
 
 QQ 官方字段会保留在 `message.raw` / `event.payload` 中。适配器只把跨平台能力映射到 Chat SDK 标准字段，平台特有数据不强行塞进标准模型。
@@ -160,7 +194,7 @@ qq:guild/<guild_id>/<channel_id>
 - modal / options load
 - schedule message
 - 二进制文件直传
-- ARK / Embed / Media 主动发送
+- QQ Embed 发送
 
 `fetchMessages` / `fetchMessage` 使用本进程缓存，不是 QQ 服务端历史消息查询。
 

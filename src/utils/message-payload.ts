@@ -108,6 +108,19 @@ export function getPostMessagePath(thread: QQThreadId): string {
   }
 }
 
+export function getUploadMediaPath(thread: QQThreadId): string {
+  switch (thread.type) {
+    case "group":
+      return `/v2/groups/${encodeURIComponent(thread.groupOpenId)}/files`;
+    case "c2c":
+      return `/v2/users/${encodeURIComponent(thread.userOpenId)}/files`;
+    case "guild_channel":
+      throw new NotImplementedError("Guild channel media upload is not implemented yet.", "files");
+    default:
+      return assertNever(thread);
+  }
+}
+
 export function getDeleteMessagePath(thread: QQThreadId, messageId: string): string {
   switch (thread.type) {
     case "group":
@@ -154,11 +167,40 @@ export function validateMessagePayload(message: AdapterPostableMessage): void {
     );
   }
 
-  if ("attachments" in message && Array.isArray(message.attachments) && message.attachments.length > 0) {
+  const attachments = getPostableAttachments(message);
+  if (attachments.length > 1) {
+    throw new NotImplementedError("QQ adapter currently supports one outbound attachment per message.", "attachments");
+  }
+  if (attachments.some((attachment) => !attachment.url)) {
     throw new NotImplementedError(
-      "QQ adapter does not support outbound `attachments` in post payloads. Use text/card content only.",
+      "QQ media messages currently require URL-based attachments. Direct binary upload is not implemented in this adapter.",
       "attachments",
     );
+  }
+}
+
+export function getPostableAttachments(message: AdapterPostableMessage): Attachment[] {
+  if (typeof message === "string") {
+    return [];
+  }
+  return "attachments" in message && Array.isArray(message.attachments) ? message.attachments : [];
+}
+
+export function toQQMediaFileType(thread: QQThreadId, attachment: Attachment): number {
+  switch (attachment.type) {
+    case "image":
+      return 1;
+    case "video":
+      return 2;
+    case "audio":
+      return 3;
+    case "file":
+      if (thread.type === "group") {
+        throw new NotImplementedError("QQ group media messages do not support file attachments yet.", "attachments");
+      }
+      return 4;
+    default:
+      return assertNever(attachment.type);
   }
 }
 

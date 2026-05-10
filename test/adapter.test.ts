@@ -793,6 +793,105 @@ describe("QQAdapter outbound rich messages", () => {
     });
   });
 
+  it("sends URL image attachments through QQ media flow", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/files") {
+        return Response.json({
+          file_info: "media-file-info",
+          file_uuid: "media-file-uuid",
+          ttl: 3600,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        return Response.json({
+          id: "sent-message-1",
+          timestamp: "2026-05-09T12:00:01+08:00",
+        });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.postMessage("qq:c2c/user-openid", {
+      attachments: [
+        {
+          type: "image",
+          url: "https://example.test/image.png",
+        },
+      ],
+      raw: "image caption",
+    });
+
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
+      file_type: 1,
+      srv_send_msg: false,
+      url: "https://example.test/image.png",
+    });
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[2]?.arguments[1]?.body ?? "")), {
+      content: "image caption",
+      media: {
+        file_info: "media-file-info",
+      },
+      msg_type: 7,
+    });
+  });
+
+  it("sends QQ Ark messages through adapter-specific API", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        return Response.json({
+          id: "sent-message-1",
+          timestamp: "2026-05-09T12:00:01+08:00",
+        });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.postArk("qq:c2c/user-openid", {
+      kv: [
+        {
+          key: "#DESC#",
+          value: "机器人订阅消息",
+        },
+      ],
+      template_id: 23,
+    });
+
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
+      ark: {
+        kv: [
+          {
+            key: "#DESC#",
+            value: "机器人订阅消息",
+          },
+        ],
+        template_id: 23,
+      },
+      msg_type: 3,
+    });
+  });
+
   it("maps Chat SDK card buttons to QQ markdown keyboard", async () => {
     const adapter = createAdapter({
       tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",

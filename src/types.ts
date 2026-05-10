@@ -237,6 +237,44 @@ export interface QQKeyboardButton {
   };
 }
 
+export interface QQArkObjectKeyValue {
+  key: string;
+  value: string;
+}
+
+export interface QQArkObject {
+  obj_kv: QQArkObjectKeyValue[];
+}
+
+export interface QQArkKeyValue {
+  key: string;
+  obj?: QQArkObject[];
+  value?: string;
+}
+
+export interface QQArkPayload {
+  kv: QQArkKeyValue[];
+  template_id: number;
+}
+
+export interface QQMediaPayload {
+  file_info: string;
+}
+
+export interface QQMediaUploadRequest {
+  file_data?: string;
+  file_type: number;
+  srv_send_msg: boolean;
+  url?: string;
+}
+
+export interface QQMediaUploadResponse {
+  file_info: string;
+  file_uuid?: string;
+  id?: string;
+  ttl?: number;
+}
+
 /** Shared raw message shape used for inbound and outbound normalization. */
 export interface QQBaseMessage {
   /** Internal flag set by adapter for locally posted messages. */
@@ -377,6 +415,8 @@ export type QQRawMessage = QQIncomingMessage | QQSentMessage;
 
 /** QQ OpenAPI send-message request body. */
 export interface QQSendMessageRequest {
+  /** QQ Ark message payload. */
+  ark?: QQArkPayload;
   /** Outbound message content. */
   content?: string;
   /** Passive reply context field. */
@@ -385,6 +425,8 @@ export interface QQSendMessageRequest {
   keyboard?: QQKeyboardPayload;
   /** QQ markdown message payload. */
   markdown?: QQMarkdownPayload;
+  /** QQ media message payload. */
+  media?: QQMediaPayload;
   /** Passive reply context field. */
   msg_id?: string;
   /** Passive reply sequence in the same msg_id context. */

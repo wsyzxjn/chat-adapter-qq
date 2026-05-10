@@ -1,6 +1,7 @@
 import type {
   Adapter,
   AdapterPostableMessage,
+  Attachment,
   Author,
   ChannelInfo,
   ChatInstance,
@@ -40,11 +41,14 @@ import type {
   QQAccessTokenResponse,
   QQAdapterConfig,
   QQActionEventDataMap,
+  QQArkPayload,
   QQGatewayBotResponse,
   QQIncomingMessage,
   QQInteractionPayload,
   QQMessageEventType,
   QQMessageEventDataMap,
+  QQMediaUploadRequest,
+  QQMediaUploadResponse,
   QQPlatformEvent,
   QQPlatformEventDataMap,
   QQPlatformEventHandler,
@@ -62,9 +66,12 @@ import type {
 import {
   buildMessageContentPayload,
   getDeleteMessagePath,
+  getPostableAttachments,
   getPostMessagePath,
+  getUploadMediaPath,
   streamChunkToText,
   toAttachments,
+  toQQMediaFileType,
   validateMessagePayload,
 } from "./utils/message-payload.js";
 import {
@@ -429,9 +436,26 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     validateMessagePayload(message);
     const thread = this.decodeThreadId(threadId);
     this.assertFeature(thread, "postMessage");
-    const payload = this.buildSendPayload(threadId, message);
-    const path = getPostMessagePath(thread);
+    const payload = await this.buildSendPayload(threadId, thread, message);
 
+    return this.postPayload(threadId, thread, payload);
+  }
+
+  async postArk(threadId: string, ark: QQArkPayload): Promise<RawMessage<QQRawMessage>> {
+    const thread = this.decodeThreadId(threadId);
+    this.assertFeature(thread, "postMessage");
+    return this.postPayload(threadId, thread, this.withPassiveContext(threadId, {
+      ark,
+      msg_type: 3,
+    }));
+  }
+
+  private async postPayload(
+    threadId: string,
+    thread: QQThreadId,
+    payload: QQSendMessageRequest,
+  ): Promise<RawMessage<QQRawMessage>> {
+    const path = getPostMessagePath(thread);
     const sentRaw = await this.apiRequest<QQSentMessage>(path, {
       body: JSON.stringify(payload),
       method: "POST",
@@ -1089,9 +1113,31 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     throw new NotImplementedError(`Feature ${feature} is not supported in scene: ${thread.type}`, feature);
   }
 
-  private buildSendPayload(threadId: string, message: AdapterPostableMessage): QQSendMessageRequest {
+  private async buildSendPayload(
+    threadId: string,
+    thread: QQThreadId,
+    message: AdapterPostableMessage,
+  ): Promise<QQSendMessageRequest> {
     const payload = buildMessageContentPayload(this.converter, message);
+    const attachments = getPostableAttachments(message);
+    if (attachments.length > 0) {
+      const media = await this.uploadMedia(thread, attachments[0]!);
+      const fallbackContent = payload.content ?? payload.markdown?.content;
+      delete payload.markdown;
+      delete payload.keyboard;
+      if (fallbackContent !== undefined) {
+        payload.content = fallbackContent;
+      }
+      payload.media = {
+        file_info: media.file_info,
+      };
+      payload.msg_type = 7;
+    }
 
+    return this.withPassiveContext(threadId, payload);
+  }
+
+  private withPassiveContext(threadId: string, payload: QQSendMessageRequest): QQSendMessageRequest {
     const context = this.passiveContextByThread.get(threadId);
     if (context?.msgId) {
       payload.msg_id = context.msgId;
@@ -1102,6 +1148,24 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     }
 
     return payload;
+  }
+
+  private async uploadMedia(thread: QQThreadId, attachment: Attachment): Promise<QQMediaUploadResponse> {
+    const url = attachment.url;
+    if (!url) {
+      throw new NotImplementedError("QQ media messages currently require URL-based attachments.", "attachments");
+    }
+
+    const request: QQMediaUploadRequest = {
+      file_type: toQQMediaFileType(thread, attachment),
+      srv_send_msg: false,
+      url,
+    };
+
+    return this.apiRequest<QQMediaUploadResponse>(getUploadMediaPath(thread), {
+      body: JSON.stringify(request),
+      method: "POST",
+    });
   }
 
   private updatePassiveContext(threadId: string, raw: QQRawMessage): void {
