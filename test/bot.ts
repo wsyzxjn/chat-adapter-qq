@@ -8,7 +8,7 @@ import {
   ConsoleLogger,
   LinkButton,
 } from "chat";
-import type { Attachment, Channel, Message, Thread } from "chat";
+import type { Attachment, Channel, Thread } from "chat";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import { createQQAdapter, type QQAdapterBaseConfig, type QQSocketModeOptions } from "@amatsuka/chat-adapter-qq";
 
@@ -159,6 +159,10 @@ testBot.onSlashCommand("/images", async (event) => {
   await postImagesTest(event.channel);
 });
 
+testBot.onSlashCommand("/jsx-image", async (event) => {
+  await postJsxImageTest(event.channel);
+});
+
 testBot.onSlashCommand("/ark", async (event) => {
   await postArkTest(event.channel);
 });
@@ -167,9 +171,6 @@ testBot.onDirectMessage(async (thread, message) => {
   if (qqDebugPayloads) {
     console.log("[qq:raw-message]", JSON.stringify(message.raw, null, 2));
   }
-  if (await handleTestCommand(thread, message)) {
-    return;
-  }
   await thread.post(`echo: ${message.text}`);
 });
 
@@ -177,42 +178,12 @@ testBot.onSubscribedMessage(async (thread, message) => {
   if (qqDebugPayloads) {
     console.log("[qq:raw-message]", JSON.stringify(message.raw, null, 2));
   }
-  if (await handleTestCommand(thread, message)) {
-    return;
-  }
   await thread.post(`echo: ${message.text}`);
 });
 
 testBot.onAction("qq_test_ok", async (event) => {
   await event.thread?.post(`button clicked: ${event.value ?? event.actionId}`);
 });
-
-async function handleTestCommand(thread: Thread, message: Message): Promise<boolean> {
-  const text = message.text.trim().toLowerCase();
-  switch (text) {
-    case "help":
-    case "test":
-    case "tests":
-      await thread.post([
-        "QQ test commands:",
-        "- image: send test/images/amatsuka.jpeg",
-        "- images: send test/images/amatsuka.jpeg twice in one post",
-        "- ark: send one QQ Ark message",
-      ].join("\n"));
-      return true;
-    case "image":
-      await postImageTest(thread);
-      return true;
-    case "images":
-      await postImagesTest(thread);
-      return true;
-    case "ark":
-      await postArkTest(thread);
-      return true;
-    default:
-      return false;
-  }
-}
 
 async function postImageTest(thread: QQTestTarget): Promise<void> {
   await thread.post({
@@ -231,6 +202,22 @@ async function postImagesTest(thread: QQTestTarget): Promise<void> {
     ],
     raw: "QQ media multi-image test",
   });
+}
+
+async function postJsxImageTest(thread: QQTestTarget): Promise<void> {
+  await thread.post(
+    Card({
+      children: [
+        CardText("QQ JSX image test"),
+        {
+          alt: "Amatsuka",
+          type: "image",
+          url: await readTestImageDataUrl(),
+        },
+      ],
+      title: "QQ JSX Card",
+    }),
+  );
 }
 
 async function postArkTest(thread: QQTestTarget): Promise<void> {
@@ -279,10 +266,16 @@ async function postArkTest(thread: QQTestTarget): Promise<void> {
 }
 
 async function readTestImageAttachment(): Promise<Attachment> {
+  const data = await readFile(qqTestImagePath);
   return {
-    data: await readFile(qqTestImagePath),
+    data,
     mimeType: "image/jpeg",
     name: "amatsuka.jpeg",
     type: "image",
   };
+}
+
+async function readTestImageDataUrl(): Promise<string> {
+  const data = await readFile(qqTestImagePath);
+  return `data:image/jpeg;base64,${data.toString("base64")}`;
 }

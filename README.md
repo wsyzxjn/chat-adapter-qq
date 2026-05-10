@@ -1,5 +1,7 @@
 # @amatsuka/chat-adapter-qq
 
+[![npm](https://img.shields.io/npm/v/@amatsuka/chat-adapter-qq)](https://www.npmjs.com/package/@amatsuka/chat-adapter-qq)
+
 QQ 机器人开放平台 API v2 的 [Chat SDK](https://www.npmjs.com/package/chat) 适配器。
 
 ## 功能
@@ -142,6 +144,8 @@ await thread.post({
 
 媒体附件支持 URL 或二进制 `data` / `fetchData`，支持 `image`、`video`、`audio` 和单聊 `file`。一次传入多张 `image` 时，适配器会按 QQ OpenAPI 的单个 `media` 对象拆成多条媒体消息顺序发送。上传/登记媒体后会把返回的 `file_info`、`file_uuid` 和 `ttl` 透传到 `media`，并在当前进程内按 TTL 复用；`ttl=0` 视为长期有效，未返回 TTL 时不缓存。Chat SDK `files` 暂不支持。
 
+JSX/Card 里的 `Image({ url })` 和 `imageUrl` 会自动转成 QQ media，支持普通 URL 和 `data:image/...;base64,...`；`Text` / `CardText`、`CardLink`、`Fields`、`Table`、`Divider` 会渲染到 Markdown，`Button` / `LinkButton` 会渲染为 QQ Keyboard。
+
 QQ 专有能力挂在适配器实例上。ARK 消息可直接调用：
 
 ```ts
@@ -277,9 +281,10 @@ QQ_SOCKET_MODE_URL=
 - `/ping`
 - `/md`
 - `/button`
-- `/image` 或发送 `image`：发送 `test/images/amatsuka.jpeg`
-- `/images` 或发送 `images`：一次传入两张 `test/images/amatsuka.jpeg`
-- `/ark` 或发送 `ark`：发送 QQ Ark 消息
+- `/image`：发送 `test/images/amatsuka.jpeg`
+- `/images`：一次传入两张 `test/images/amatsuka.jpeg`
+- `/jsx-image`：发送包含 `test/images/amatsuka.jpeg` 的 Card/Image JSX 消息
+- `/ark`：发送 QQ Ark 消息
 
 ## 参考
 

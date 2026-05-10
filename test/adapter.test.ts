@@ -1,5 +1,5 @@
 import type { ChatInstance, Logger } from "chat";
-import { Actions, Button, Card, CardText, LinkButton } from "chat";
+import { Actions, Button, Card, CardLink, CardText, Divider, Field, Fields, Image, LinkButton, Section, Table } from "chat";
 import { QQAdapter } from "@amatsuka/chat-adapter-qq";
 import type { QQSocketModeAdapterConfig, QQWebhookAdapterConfig } from "@amatsuka/chat-adapter-qq";
 import { describe, it, afterEach, mock } from "node:test";
@@ -1160,6 +1160,99 @@ describe("QQAdapter outbound rich messages", () => {
       (body.markdown as { content: string }).content.includes("Choose an action"),
       'markdown.content includes "Choose an action"',
     );
+  });
+
+  it("maps Chat SDK JSX card images and content to QQ media and markdown", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    let uploadCount = 0;
+    let messageCount = 0;
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/files") {
+        uploadCount += 1;
+        return Response.json({
+          file_info: `media-file-info-${uploadCount}`,
+          ttl: 3600,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        messageCount += 1;
+        return Response.json({
+          id: `sent-message-${messageCount}`,
+          timestamp: "2026-05-09T12:00:01+08:00",
+        });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.postMessage(
+      "qq:c2c/user-openid",
+      Card({
+        children: [
+          CardText("hello"),
+          Image({
+            alt: "sample image",
+            url: "https://example.test/image.png",
+          }),
+          Section([
+            Fields([
+              Field({ label: "Status", value: "OK" }),
+            ]),
+            CardLink({
+              label: "Docs",
+              url: "https://example.test/docs",
+            }),
+          ]),
+          Divider(),
+          Table({
+            headers: ["Name", "Value"],
+            rows: [["adapter", "qq"]],
+          }),
+        ],
+        imageUrl: "https://example.test/header.png",
+        subtitle: "subtitle",
+        title: "title",
+      }),
+    );
+
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
+      file_type: 1,
+      srv_send_msg: false,
+      url: "https://example.test/header.png",
+    });
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[3]?.arguments[1]?.body ?? "")), {
+      content: [
+        "# title",
+        "subtitle",
+        "hello",
+        "图片：sample image",
+        "**Status**: OK\n[Docs](https://example.test/docs)",
+        "---",
+        "| Name | Value |\n| --- | --- |\n| adapter | qq |",
+      ].join("\n\n"),
+      media: {
+        file_info: "media-file-info-1",
+        ttl: 3600,
+      },
+      msg_type: 7,
+    });
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[4]?.arguments[1]?.body ?? "")), {
+      content: " ",
+      media: {
+        file_info: "media-file-info-2",
+        ttl: 3600,
+      },
+      msg_type: 7,
+    });
   });
 
   it("streams by collecting chunks and posting once because QQ does not support editMessage", async () => {

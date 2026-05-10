@@ -1,6 +1,7 @@
 import type {
   AdapterPostableMessage,
   Attachment,
+  CardChild,
   CardElement,
   Message,
   PostableAst,
@@ -78,7 +79,7 @@ export function buildMessageContentPayload(
   if (card) {
     const payload: QQSendMessageRequest = {
       markdown: {
-        content: buildOutboundContent(converter, message),
+        content: renderCardMarkdown(card),
       },
       msg_type: 2,
     };
@@ -187,7 +188,9 @@ export function getPostableAttachments(message: AdapterPostableMessage): Attachm
   if (typeof message === "string") {
     return [];
   }
-  return "attachments" in message && Array.isArray(message.attachments) ? message.attachments : [];
+  const attachments = "attachments" in message && Array.isArray(message.attachments) ? message.attachments : [];
+  const card = extractCard(message);
+  return card ? [...attachments, ...extractCardImageAttachments(card)] : attachments;
 }
 
 export function toQQMediaFileType(thread: QQThreadId, attachment: Attachment): number {
@@ -232,6 +235,109 @@ function extractCard(message: AdapterPostableMessage): CardElement | null {
     return message.card;
   }
   return null;
+}
+
+function extractCardImageAttachments(card: CardElement): Attachment[] {
+  const attachments: Attachment[] = [];
+  if (card.imageUrl) {
+    attachments.push(toImageAttachment(card.imageUrl));
+  }
+
+  const visit = (children: readonly CardChild[]): void => {
+    for (const child of children) {
+      if (child.type === "image") {
+        attachments.push(toImageAttachment(child.url, child.alt));
+        continue;
+      }
+      if (child.type === "section") {
+        visit(child.children);
+      }
+    }
+  };
+  visit(card.children);
+  return attachments;
+}
+
+function toImageAttachment(url: string, name?: string): Attachment {
+  const dataUrl = parseDataUrl(url);
+  if (dataUrl) {
+    return {
+      data: dataUrl.data,
+      ...(dataUrl.mimeType ? { mimeType: dataUrl.mimeType } : {}),
+      ...(name !== undefined ? { name } : {}),
+      type: "image",
+    };
+  }
+  return {
+    ...(name !== undefined ? { name } : {}),
+    type: "image",
+    url,
+  };
+}
+
+function parseDataUrl(url: string): { data: Buffer; mimeType?: string } | null {
+  const match = /^data:([^;,]+)?(;base64)?,(.*)$/i.exec(url);
+  if (!match) {
+    return null;
+  }
+  const [, mimeType, base64Flag, value] = match;
+  if (value === undefined) {
+    return null;
+  }
+  return {
+    data: base64Flag ? Buffer.from(value, "base64") : Buffer.from(decodeURIComponent(value)),
+    ...(mimeType ? { mimeType } : {}),
+  };
+}
+
+function renderCardMarkdown(card: CardElement): string {
+  const lines = [
+    card.title ? `# ${card.title}` : null,
+    card.subtitle ?? null,
+    ...card.children.map(renderCardChildMarkdown),
+  ].filter((line): line is string => Boolean(line?.trim()));
+  return lines.length > 0 ? lines.join("\n\n") : " ";
+}
+
+function renderCardChildMarkdown(child: CardChild): string | null {
+  switch (child.type) {
+    case "actions":
+      return null;
+    case "divider":
+      return "---";
+    case "fields":
+      return child.children.map((field) => `**${field.label}**: ${field.value}`).join("\n");
+    case "image":
+      return child.alt ? `图片：${child.alt}` : null;
+    case "link":
+      return `[${child.label}](${child.url})`;
+    case "section":
+      return child.children.map(renderCardChildMarkdown).filter(Boolean).join("\n");
+    case "table":
+      return renderMarkdownTable(child.headers, child.rows);
+    case "text":
+      return renderTextElement(child.content, child.style);
+    default:
+      return assertNever(child);
+  }
+}
+
+function renderMarkdownTable(headers: string[], rows: string[][]): string {
+  if (headers.length === 0) {
+    return rows.map((row) => row.join(" | ")).join("\n");
+  }
+  return [
+    `| ${headers.join(" | ")} |`,
+    `| ${headers.map(() => "---").join(" | ")} |`,
+    ...rows.map((row) => `| ${row.join(" | ")} |`),
+  ].join("\n");
+}
+
+function renderTextElement(content: string, style: "bold" | "muted" | "plain" | undefined): string {
+  if (style === "bold") {
+    return `**${content}**`;
+  }
+  return content;
 }
 
 function cardToKeyboard(card: CardElement): QQKeyboardPayload | null {
