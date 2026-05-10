@@ -49,6 +49,7 @@ import type {
   QQPlatformEventDataMap,
   QQPlatformEventHandler,
   QQPlatformEventType,
+  QQQuotedMessage,
   QQRawMessage,
   QQSendMessageRequest,
   QQSentMessage,
@@ -144,7 +145,6 @@ const QQ_SIGNATURE_SIZE = 64;
 export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   readonly name = "qq";
   readonly userName: string;
-  readonly botUserId?: string;
 
   private chat: ChatInstance | null = null;
   private readonly apiBaseUrl: string;
@@ -169,9 +169,6 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
 
     this.config = config;
     this.userName = config.userName ?? "qq-bot";
-    if (config.botUserId !== undefined) {
-      this.botUserId = config.botUserId;
-    }
     this.logger = config.logger ?? new ConsoleLogger();
     this.apiBaseUrl = config.apiBaseUrl ?? (config.sandbox ? SANDBOX_API_BASE_URL : DEFAULT_API_BASE_URL);
   }
@@ -401,7 +398,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     const threadId = this.encodeThreadId(thread);
     const content = raw.content ?? "";
     const authorId = this.resolveAuthorId(raw);
-    const isMe = raw._chat_is_outbound === true || (this.botUserId ? authorId === this.botUserId : false);
+    const isMe = raw._chat_is_outbound === true;
     const dateSent = parseQQTimestamp(raw.timestamp, true);
     const editedAt = parseQQTimestamp(raw.edited_timestamp, false);
     const metadata = {
@@ -816,9 +813,11 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     const threadId = this.encodeThreadId(thread);
     const normalizedRaw: QQRawMessage = {
       ...raw,
+      ...this.getQuotedMessageFields(raw),
       _chat_thread_id: toThreadStorageId(thread),
       _chat_thread_type: thread.type,
     };
+    this.logMessageElements(payload.t, normalizedRaw);
 
     return { raw: normalizedRaw, threadId };
   }
@@ -865,7 +864,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       user: {
         fullName: authorId,
         isBot: false,
-        isMe: this.botUserId ? authorId === this.botUserId : false,
+        isMe: false,
         userId: authorId,
         userName: authorId,
       },
@@ -1022,21 +1021,61 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   }
 
   private resolveAuthorId(raw: QQRawMessage): string {
-    return raw.author?.member_openid ?? raw.author?.user_openid ?? raw.author?.id ?? this.botUserId ?? "unknown";
+    return raw.author?.member_openid ?? raw.author?.user_openid ?? raw.author?.id ?? "unknown";
+  }
+
+  private getQuotedMessageFields(raw: QQIncomingMessage): Pick<QQRawMessage, "_chat_quoted_message"> {
+    const quotedMessage = this.resolveQuotedMessage(raw);
+    return quotedMessage ? { _chat_quoted_message: quotedMessage } : {};
+  }
+
+  private resolveQuotedMessage(raw: QQIncomingMessage): QQQuotedMessage | null {
+    const refMsgIdx = this.findMessageSceneValue(raw.message_scene?.ext, "ref_msg_idx");
+    if (!refMsgIdx) {
+      return null;
+    }
+
+    const element = raw.msg_elements?.find((item) => item.msg_idx === refMsgIdx);
+    return {
+      ...(element?.content !== undefined ? { content: element.content } : {}),
+      ...(element?.message_type !== undefined ? { messageType: element.message_type } : {}),
+      msgIdx: refMsgIdx,
+    };
+  }
+
+  private findMessageSceneValue(ext: readonly string[] | undefined, key: string): string | null {
+    const prefix = `${key}=`;
+    const segment = ext?.find((item) => item.startsWith(prefix));
+    return segment ? segment.slice(prefix.length) : null;
+  }
+
+  private logMessageElements(eventType: QQMessageEventType, raw: QQRawMessage): void {
+    if (!raw.msg_elements?.length && !raw._chat_quoted_message) {
+      return;
+    }
+
+    this.logger.debug("QQ message elements received", {
+      eventType,
+      messageId: raw.id ?? raw.msg_id,
+      msgElements: raw.msg_elements,
+      quotedMessage: raw._chat_quoted_message,
+    });
   }
 
   private getOutboundAuthor(type: QQThreadType): NonNullable<QQRawMessage["author"]> {
     switch (type) {
       case "group":
         return {
+          bot: true,
+          id: this.config.appId,
           username: this.userName,
-          ...(this.botUserId !== undefined ? { member_openid: this.botUserId } : {}),
         };
       case "c2c":
       case "guild_channel":
         return {
+          bot: true,
+          id: this.config.appId,
           username: this.userName,
-          ...(this.botUserId !== undefined ? { user_openid: this.botUserId } : {}),
         };
       default:
         return assertNever(type);

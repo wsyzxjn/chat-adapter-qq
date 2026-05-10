@@ -76,8 +76,6 @@ export interface QQAdapterBaseConfig {
   appId: string;
   /** Advanced: Bot Secret used for webhook signing; falls back to clientSecret. */
   botSecret?: string;
-  /** Optional Chat SDK identity hint to improve `isMe` detection. */
-  botUserId?: string;
   /** QQ bot client secret for access token retrieval. */
   clientSecret: string;
   /** Logger implementation from Chat SDK. */
@@ -182,6 +180,25 @@ export interface QQMessageAttachment {
   width?: number;
 }
 
+export interface QQMessageElement {
+  [key: string]: unknown;
+  content?: string;
+  message_type?: number;
+  msg_idx?: string;
+  type?: string;
+}
+
+export interface QQMessageScene {
+  ext?: string[];
+  source?: string;
+}
+
+export interface QQQuotedMessage {
+  content?: string;
+  messageType?: number;
+  msgIdx: string;
+}
+
 export interface QQMarkdownPayload {
   content?: string;
   custom_template_id?: string;
@@ -228,6 +245,8 @@ export interface QQBaseMessage {
   _chat_thread_id?: string;
   /** Internal normalized thread scene type. */
   _chat_thread_type?: QQThreadType;
+  /** Normalized quoted/referenced QQ message data, derived from message_scene/msg_elements. */
+  _chat_quoted_message?: QQQuotedMessage;
   /** File attachments. */
   attachments?: QQMessageAttachment[];
   /** Author metadata. */
@@ -246,6 +265,12 @@ export interface QQBaseMessage {
   id?: string;
   /** QQ msg_id field (also used for passive reply context). */
   msg_id?: string;
+  /** QQ message elements, used by newer payloads for rich/message-reference data. */
+  msg_elements?: QQMessageElement[];
+  /** QQ message scene metadata, including msg_idx/ref_msg_idx values. */
+  message_scene?: QQMessageScene;
+  /** QQ message type code. */
+  message_type?: number;
   /** User openid from QQ payloads. */
   openid?: string;
   /** Message timestamp. */
@@ -284,18 +309,23 @@ export interface QQThreadResolvableEventData {
   group_openid?: string;
   id?: string;
   msg_id?: string;
+  op_member_openid?: string;
   openid?: string;
+  scene?: number;
+  scene_param?: string;
+  timestamp?: number | string;
   user_openid?: string;
 }
 
 export type QQPlatformEventType =
+  | "C2C_MSG_REJECT"
   | "C2C_MSG_RECEIVE"
   | "FRIEND_ADD"
   | "FRIEND_DEL"
   | "GROUP_ADD_ROBOT"
   | "GROUP_DEL_ROBOT"
-  | "GROUP_MSG_RECEIVE"
-  | "GROUP_REJECT_ADD_ROBOT";
+  | "GROUP_MSG_REJECT"
+  | "GROUP_MSG_RECEIVE";
 
 export interface QQMessageEventDataMap {
   C2C_MESSAGE_CREATE: QQIncomingMessage;
@@ -307,13 +337,14 @@ export interface QQActionEventDataMap {
 }
 
 export interface QQPlatformEventDataMap {
+  C2C_MSG_REJECT: QQThreadResolvableEventData;
   C2C_MSG_RECEIVE: QQThreadResolvableEventData;
   FRIEND_ADD: QQThreadResolvableEventData;
   FRIEND_DEL: QQThreadResolvableEventData;
   GROUP_ADD_ROBOT: QQThreadResolvableEventData;
   GROUP_DEL_ROBOT: QQThreadResolvableEventData;
+  GROUP_MSG_REJECT: QQThreadResolvableEventData;
   GROUP_MSG_RECEIVE: QQThreadResolvableEventData;
-  GROUP_REJECT_ADD_ROBOT: QQThreadResolvableEventData;
 }
 
 export type QQKnownDispatchEventType =

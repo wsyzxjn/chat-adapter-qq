@@ -78,13 +78,14 @@ const ACTION_EVENT_TYPE_SET: ReadonlySet<string> = new Set(ACTION_EVENT_TYPES);
 
 /** QQ non-message dispatch events known by this adapter's current C2C/GROUP scope. */
 export const PLATFORM_EVENT_TYPES = [
+  "C2C_MSG_REJECT",
   "C2C_MSG_RECEIVE",
   "FRIEND_ADD",
   "FRIEND_DEL",
   "GROUP_ADD_ROBOT",
   "GROUP_DEL_ROBOT",
+  "GROUP_MSG_REJECT",
   "GROUP_MSG_RECEIVE",
-  "GROUP_REJECT_ADD_ROBOT",
 ] as const satisfies readonly QQPlatformEventType[];
 const PLATFORM_EVENT_TYPE_SET: ReadonlySet<string> = new Set(PLATFORM_EVENT_TYPES);
 

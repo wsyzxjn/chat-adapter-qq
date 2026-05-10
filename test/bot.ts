@@ -4,6 +4,7 @@ import {
   Card,
   CardText,
   Chat,
+  ConsoleLogger,
   LinkButton,
 } from "chat";
 import { createMemoryState } from "@chat-adapter/state-memory";
@@ -55,21 +56,21 @@ const qqClientSecret =
   optionalEnv("QQ_CLIENT_SECRET") ?? optionalEnv("QQ_SECRET") ?? "";
 const qqMode = resolveQQMode();
 const qqBotSecret = optionalEnv("QQ_BOT_SECRET");
-const qqBotUserId = optionalEnv("QQ_BOT_USER_ID");
 const qqSocketModeIntents = envNumber("QQ_SOCKET_MODE_INTENTS");
 const qqSocketModeShard = envShard("QQ_SOCKET_MODE_SHARD");
 const qqSocketModeUrl = optionalEnv("QQ_SOCKET_MODE_URL");
+const qqDebugPayloads = envFlag("QQ_DEBUG_PAYLOADS", false);
 
 const qqBaseConfig = {
   appId: optionalEnv("QQ_APP_ID") ?? "",
   clientSecret: qqClientSecret,
   requireAppIdHeader: envFlag("QQ_REQUIRE_APP_ID_HEADER", true),
+  ...(qqDebugPayloads ? { logger: new ConsoleLogger("debug") } : {}),
   sandbox: envFlag("QQ_SANDBOX", false),
   strictWebhookEvents: envFlag("QQ_STRICT_WEBHOOK_EVENTS", false),
   userName: botUserName,
   verifySignature: envFlag("QQ_VERIFY_SIGNATURE", true),
   ...(qqBotSecret !== undefined ? { botSecret: qqBotSecret } : {}),
-  ...(qqBotUserId !== undefined ? { botUserId: qqBotUserId } : {}),
 } satisfies QQAdapterBaseConfig;
 
 const qqSocketModeOptions = {
@@ -100,6 +101,12 @@ export const testBot = new Chat({
 qq.onEvent(async (event) => {
   console.log("[qq:event]", event.type, event.data);
 });
+
+if (qqDebugPayloads) {
+  qq.onEvent(async (event) => {
+    console.log("[qq:raw-event]", JSON.stringify(event.payload, null, 2));
+  });
+}
 
 testBot.onSlashCommand("/ping", async (event) => {
   await event.channel.post(`pong ${new Date().toISOString()}`);
@@ -140,10 +147,16 @@ testBot.onSlashCommand("/button", async (event) => {
 });
 
 testBot.onDirectMessage(async (thread, message) => {
+  if (qqDebugPayloads) {
+    console.log("[qq:raw-message]", JSON.stringify(message.raw, null, 2));
+  }
   await thread.post(`echo: ${message.text}`);
 });
 
 testBot.onSubscribedMessage(async (thread, message) => {
+  if (qqDebugPayloads) {
+    console.log("[qq:raw-message]", JSON.stringify(message.raw, null, 2));
+  }
   await thread.post(`echo: ${message.text}`);
 });
 

@@ -301,6 +301,105 @@ describe("QQAdapter webhook events", () => {
     });
   });
 
+  it("dispatches group message events with group thread and member author", async () => {
+    const adapter = createAdapter();
+    const processMessage = await initializeWithProcessSpy(adapter);
+
+    const response = await adapter.handleWebhook(
+      new Request("https://example.test/webhooks/qq", {
+        body: JSON.stringify({
+          d: {
+            author: {
+              member_openid: "member-openid",
+            },
+            content: "hello group",
+            group_openid: "group-openid",
+            id: "message-1",
+            timestamp: "2026-05-09T12:00:00+08:00",
+          },
+          id: "event-1",
+          op: 0,
+          s: 7,
+          t: "GROUP_AT_MESSAGE_CREATE",
+        }),
+        headers: {
+          "X-Bot-Appid": APP_ID,
+        },
+        method: "POST",
+      }),
+    );
+
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(processMessage.mock.callCount(), 1);
+    assert.strictEqual(processMessage.mock.calls[0]?.arguments[1], "qq:group/group-openid");
+    assertMatchObject(processMessage.mock.calls[0]?.arguments[2], {
+      author: {
+        isMe: false,
+        userId: "member-openid",
+      },
+      id: "message-1",
+      text: "hello group",
+      threadId: "qq:group/group-openid",
+    });
+  });
+
+  it("normalizes QQ quoted message data from message scene elements", async () => {
+    const adapter = createAdapter();
+    const processMessage = await initializeWithProcessSpy(adapter);
+
+    const response = await adapter.handleWebhook(
+      new Request("https://example.test/webhooks/qq", {
+        body: JSON.stringify({
+          d: {
+            author: {
+              user_openid: "user-openid",
+            },
+            content: "quoted reply",
+            id: "message-2",
+            message_scene: {
+              ext: [
+                "",
+                "ref_msg_idx=REFIDX_SOURCE",
+                "msg_idx=REFIDX_CURRENT",
+              ],
+              source: "default",
+            },
+            message_type: 103,
+            msg_elements: [
+              {
+                content: "source message",
+                message_type: 103,
+                msg_idx: "REFIDX_SOURCE",
+              },
+            ],
+            timestamp: "2026-05-11T02:06:48+08:00",
+          },
+          id: "event-1",
+          op: 0,
+          s: 7,
+          t: "C2C_MESSAGE_CREATE",
+        }),
+        headers: {
+          "X-Bot-Appid": APP_ID,
+        },
+        method: "POST",
+      }),
+    );
+
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(processMessage.mock.callCount(), 1);
+    assertMatchObject(processMessage.mock.calls[0]?.arguments[2], {
+      raw: {
+        _chat_quoted_message: {
+          content: "source message",
+          messageType: 103,
+          msgIdx: "REFIDX_SOURCE",
+        },
+      },
+      text: "quoted reply",
+    });
+  });
+
   it("ACKs known non-message events without dispatching messages", async () => {
     const adapter = createAdapter();
     const processMessage = await initializeWithProcessSpy(adapter);
@@ -574,9 +673,92 @@ describe("QQAdapter interaction events", () => {
     assert.strictEqual(response.status, 200);
     assert.deepStrictEqual(order, ["ack", "action"]);
   });
+
+  it("dispatches group button interactions with member author and group thread", async () => {
+    const adapter = createAdapter({
+      acknowledgeInteractions: false,
+    });
+    const processAction = await initializeWithProcessActionSpy(adapter);
+
+    const response = await adapter.handleWebhook(
+      new Request("https://example.test/webhooks/qq", {
+        body: JSON.stringify({
+          d: {
+            chat_type: 1,
+            data: {
+              resolved: {
+                button_data: "order-123",
+                button_id: "approve",
+              },
+            },
+            group_member_openid: "member-openid",
+            group_openid: "group-openid",
+            id: "interaction-1",
+            scene: "group",
+          },
+          id: "event-1",
+          op: 0,
+          s: 11,
+          t: "INTERACTION_CREATE",
+        }),
+        headers: {
+          "X-Bot-Appid": APP_ID,
+        },
+        method: "POST",
+      }),
+    );
+
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(processAction.mock.callCount(), 1);
+    assertMatchObject(processAction.mock.calls[0]?.arguments[0], {
+      actionId: "approve",
+      threadId: "qq:group/group-openid",
+      user: {
+        isMe: false,
+        userId: "member-openid",
+      },
+      value: "order-123",
+    });
+  });
 });
 
 describe("QQAdapter outbound rich messages", () => {
+  it("marks locally posted messages as bot-authored self messages", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        return Response.json({
+          id: "sent-message-1",
+          timestamp: "2026-05-09T12:00:01+08:00",
+        });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.postMessage("qq:c2c/user-openid", "hello");
+    const message = await adapter.fetchMessage("qq:c2c/user-openid", "sent-message-1");
+
+    assertMatchObject(message, {
+      author: {
+        isBot: true,
+        isMe: true,
+        userId: APP_ID,
+        userName: "qq-bot",
+      },
+      text: "hello",
+    });
+  });
+
   it("sends Chat SDK markdown as QQ native markdown", async () => {
     const adapter = createAdapter({
       tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
