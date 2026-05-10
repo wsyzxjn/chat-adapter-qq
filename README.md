@@ -6,7 +6,7 @@ QQ 机器人开放平台 API v2 的 [Chat SDK](https://www.npmjs.com/package/cha
 
 - 接收 QQ 私聊（C2C）和群聊消息
 - 支持 Webhook 和 Socket Mode
-- 发送文本、QQ Markdown、Markdown Keyboard 按钮和 URL 媒体附件
+- 发送文本、QQ Markdown、Markdown Keyboard 按钮和媒体附件
 - 将按钮回调映射到 `chat.onAction`
 - 支持 `chat.onDirectMessage`、`chat.openDM`、消息撤回和本进程消息缓存
 - 保留 QQ 原始 payload，方便读取平台特有字段
@@ -126,7 +126,7 @@ const unsubscribe = qq.onEvent(async (event) => {
 
 ## QQ 专有发送
 
-通用文本、Markdown、Card 和 URL 媒体附件走 `thread.post()`：
+通用文本、Markdown、Card 和媒体附件走 `thread.post()`：
 
 ```ts
 await thread.post({
@@ -140,7 +140,7 @@ await thread.post({
 });
 ```
 
-当前媒体附件一次发送一项，支持 `image`、`video`、`audio` 和单聊 `file`。二进制直传暂不支持。
+媒体附件支持 URL 或二进制 `data` / `fetchData`，支持 `image`、`video`、`audio` 和单聊 `file`。一次传入多张 `image` 时，适配器会按 QQ OpenAPI 的单个 `media` 对象拆成多条媒体消息顺序发送。上传/登记媒体后会把返回的 `file_info`、`file_uuid` 和 `ttl` 透传到 `media`，并在当前进程内按 TTL 复用；`ttl=0` 视为长期有效，未返回 TTL 时不缓存。Chat SDK `files` 暂不支持。
 
 QQ 专有能力挂在适配器实例上。ARK 消息可直接调用：
 
@@ -193,7 +193,7 @@ qq:guild/<guild_id>/<channel_id>
 - `addReaction` / `removeReaction`
 - modal / options load
 - schedule message
-- 二进制文件直传
+- Chat SDK `files`
 - QQ Embed 发送
 
 `fetchMessages` / `fetchMessage` 使用本进程缓存，不是 QQ 服务端历史消息查询。
@@ -277,6 +277,9 @@ QQ_SOCKET_MODE_URL=
 - `/ping`
 - `/md`
 - `/button`
+- `/image` 或发送 `image`：发送 `test/images/amatsuka.jpeg`
+- `/images` 或发送 `images`：一次传入两张 `test/images/amatsuka.jpeg`
+- `/ark` 或发送 `ark`：发送 QQ Ark 消息
 
 ## 参考
 

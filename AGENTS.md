@@ -75,7 +75,7 @@
 
 - `editMessage`
 - `addReaction` / `removeReaction`
-- 二进制文件直传（`files` / `attachments`）
+- Chat SDK `files`
 
 以上必须继续显式 `NotImplementedError`，不要静默吞掉。
 

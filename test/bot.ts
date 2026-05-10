@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import {
   Actions,
   Button,
@@ -7,8 +8,11 @@ import {
   ConsoleLogger,
   LinkButton,
 } from "chat";
+import type { Attachment, Channel, Message, Thread } from "chat";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import { createQQAdapter, type QQAdapterBaseConfig, type QQSocketModeOptions } from "@amatsuka/chat-adapter-qq";
+
+type QQTestTarget = Channel | Thread;
 
 function optionalEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
@@ -60,6 +64,7 @@ const qqSocketModeIntents = envNumber("QQ_SOCKET_MODE_INTENTS");
 const qqSocketModeShard = envShard("QQ_SOCKET_MODE_SHARD");
 const qqSocketModeUrl = optionalEnv("QQ_SOCKET_MODE_URL");
 const qqDebugPayloads = envFlag("QQ_DEBUG_PAYLOADS", false);
+const qqTestImagePath = new URL("./images/amatsuka.jpeg", import.meta.url);
 
 const qqBaseConfig = {
   appId: optionalEnv("QQ_APP_ID") ?? "",
@@ -146,9 +151,24 @@ testBot.onSlashCommand("/button", async (event) => {
   );
 });
 
+testBot.onSlashCommand("/image", async (event) => {
+  await postImageTest(event.channel);
+});
+
+testBot.onSlashCommand("/images", async (event) => {
+  await postImagesTest(event.channel);
+});
+
+testBot.onSlashCommand("/ark", async (event) => {
+  await postArkTest(event.channel);
+});
+
 testBot.onDirectMessage(async (thread, message) => {
   if (qqDebugPayloads) {
     console.log("[qq:raw-message]", JSON.stringify(message.raw, null, 2));
+  }
+  if (await handleTestCommand(thread, message)) {
+    return;
   }
   await thread.post(`echo: ${message.text}`);
 });
@@ -157,9 +177,112 @@ testBot.onSubscribedMessage(async (thread, message) => {
   if (qqDebugPayloads) {
     console.log("[qq:raw-message]", JSON.stringify(message.raw, null, 2));
   }
+  if (await handleTestCommand(thread, message)) {
+    return;
+  }
   await thread.post(`echo: ${message.text}`);
 });
 
 testBot.onAction("qq_test_ok", async (event) => {
   await event.thread?.post(`button clicked: ${event.value ?? event.actionId}`);
 });
+
+async function handleTestCommand(thread: Thread, message: Message): Promise<boolean> {
+  const text = message.text.trim().toLowerCase();
+  switch (text) {
+    case "help":
+    case "test":
+    case "tests":
+      await thread.post([
+        "QQ test commands:",
+        "- image: send test/images/amatsuka.jpeg",
+        "- images: send test/images/amatsuka.jpeg twice in one post",
+        "- ark: send one QQ Ark message",
+      ].join("\n"));
+      return true;
+    case "image":
+      await postImageTest(thread);
+      return true;
+    case "images":
+      await postImagesTest(thread);
+      return true;
+    case "ark":
+      await postArkTest(thread);
+      return true;
+    default:
+      return false;
+  }
+}
+
+async function postImageTest(thread: QQTestTarget): Promise<void> {
+  await thread.post({
+    attachments: [
+      await readTestImageAttachment(),
+    ],
+    raw: `QQ media image test: ${new Date().toISOString()}`,
+  });
+}
+
+async function postImagesTest(thread: QQTestTarget): Promise<void> {
+  await thread.post({
+    attachments: [
+      await readTestImageAttachment(),
+      await readTestImageAttachment(),
+    ],
+    raw: "QQ media multi-image test",
+  });
+}
+
+async function postArkTest(thread: QQTestTarget): Promise<void> {
+  await qq.postArk(thread.id, {
+    kv: [
+      {
+        key: "#DESC#",
+        value: "机器人订阅消息",
+      },
+      {
+        key: "#PROMPT#",
+        value: "QQ Test Bot",
+      },
+      {
+        key: "#LIST#",
+        obj: [
+          {
+            obj_kv: [
+              {
+                key: "desc",
+                value: "QQ Ark Test",
+              },
+            ],
+          },
+          {
+            obj_kv: [
+              {
+                key: "desc",
+                value: `time: ${new Date().toISOString()}`,
+              },
+            ],
+          },
+          {
+            obj_kv: [
+              {
+                key: "desc",
+                value: "@amatsuka/chat-adapter-qq",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    template_id: 23,
+  });
+}
+
+async function readTestImageAttachment(): Promise<Attachment> {
+  return {
+    data: await readFile(qqTestImagePath),
+    mimeType: "image/jpeg",
+    name: "amatsuka.jpeg",
+    type: "image",
+  };
+}

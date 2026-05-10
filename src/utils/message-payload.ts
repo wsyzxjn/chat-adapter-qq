@@ -168,15 +168,19 @@ export function validateMessagePayload(message: AdapterPostableMessage): void {
   }
 
   const attachments = getPostableAttachments(message);
-  if (attachments.length > 1) {
-    throw new NotImplementedError("QQ adapter currently supports one outbound attachment per message.", "attachments");
+  if (attachments.length > 1 && attachments.some((attachment) => attachment.type !== "image")) {
+    throw new NotImplementedError("QQ adapter supports multiple outbound attachments only for images.", "attachments");
   }
-  if (attachments.some((attachment) => !attachment.url)) {
+  if (attachments.some((attachment) => !hasAttachmentSource(attachment))) {
     throw new NotImplementedError(
-      "QQ media messages currently require URL-based attachments. Direct binary upload is not implemented in this adapter.",
+      "QQ media messages require URL-based or binary attachment data.",
       "attachments",
     );
   }
+}
+
+export function hasAttachmentSource(attachment: Attachment): boolean {
+  return Boolean(attachment.url || attachment.data || attachment.fetchData);
 }
 
 export function getPostableAttachments(message: AdapterPostableMessage): Attachment[] {

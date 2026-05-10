@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   Adapter,
   AdapterPostableMessage,
@@ -47,6 +48,7 @@ import type {
   QQInteractionPayload,
   QQMessageEventType,
   QQMessageEventDataMap,
+  QQMediaPayload,
   QQMediaUploadRequest,
   QQMediaUploadResponse,
   QQPlatformEvent,
@@ -98,6 +100,11 @@ import {
 interface AccessTokenCache {
   expiresAt: number;
   token: string;
+}
+
+interface MediaCacheEntry {
+  expiresAt: number | null;
+  media: QQMediaPayload;
 }
 
 interface PassiveContext {
@@ -158,6 +165,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   private readonly config: QQAdapterConfig;
   private readonly converter = new QQFormatConverter();
   private readonly logger: Logger;
+  private readonly mediaCache = new Map<string, MediaCacheEntry>();
   private readonly platformEventHandlers = new Map<QQPlatformEventType, Set<QQPlatformEventHandler>>();
   private readonly platformEventCatchAllHandlers = new Set<QQPlatformEventHandler>();
   private readonly messageCache = new Map<string, Message<QQRawMessage>[]>();
@@ -436,9 +444,15 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     validateMessagePayload(message);
     const thread = this.decodeThreadId(threadId);
     this.assertFeature(thread, "postMessage");
-    const payload = await this.buildSendPayload(threadId, thread, message);
-
-    return this.postPayload(threadId, thread, payload);
+    const payloads = await this.buildSendPayloads(threadId, thread, message);
+    let sent: RawMessage<QQRawMessage> | null = null;
+    for (const payload of payloads) {
+      sent = await this.postPayload(threadId, thread, payload);
+    }
+    if (!sent) {
+      throw new ChatError("QQ postMessage produced no outbound payload.", "INVALID_REQUEST");
+    }
+    return sent;
   }
 
   async postArk(threadId: string, ark: QQArkPayload): Promise<RawMessage<QQRawMessage>> {
@@ -1113,28 +1127,28 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     throw new NotImplementedError(`Feature ${feature} is not supported in scene: ${thread.type}`, feature);
   }
 
-  private async buildSendPayload(
+  private async buildSendPayloads(
     threadId: string,
     thread: QQThreadId,
     message: AdapterPostableMessage,
-  ): Promise<QQSendMessageRequest> {
+  ): Promise<QQSendMessageRequest[]> {
     const payload = buildMessageContentPayload(this.converter, message);
     const attachments = getPostableAttachments(message);
-    if (attachments.length > 0) {
-      const media = await this.uploadMedia(thread, attachments[0]!);
-      const fallbackContent = payload.content ?? payload.markdown?.content;
-      delete payload.markdown;
-      delete payload.keyboard;
-      if (fallbackContent !== undefined) {
-        payload.content = fallbackContent;
-      }
-      payload.media = {
-        file_info: media.file_info,
-      };
-      payload.msg_type = 7;
+    if (attachments.length === 0) {
+      return [this.withPassiveContext(threadId, payload)];
     }
 
-    return this.withPassiveContext(threadId, payload);
+    const fallbackContent = payload.content ?? payload.markdown?.content ?? " ";
+    const payloads: QQSendMessageRequest[] = [];
+    for (const [index, attachment] of attachments.entries()) {
+      const media = await this.uploadMedia(thread, attachment);
+      payloads.push(this.withPassiveContext(threadId, {
+        content: index === 0 ? fallbackContent : " ",
+        media,
+        msg_type: 7,
+      }));
+    }
+    return payloads;
   }
 
   private withPassiveContext(threadId: string, payload: QQSendMessageRequest): QQSendMessageRequest {
@@ -1150,22 +1164,76 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     return payload;
   }
 
-  private async uploadMedia(thread: QQThreadId, attachment: Attachment): Promise<QQMediaUploadResponse> {
-    const url = attachment.url;
-    if (!url) {
-      throw new NotImplementedError("QQ media messages currently require URL-based attachments.", "attachments");
+  private async uploadMedia(thread: QQThreadId, attachment: Attachment): Promise<QQMediaPayload> {
+    const fileType = toQQMediaFileType(thread, attachment);
+    const request: QQMediaUploadRequest = {
+      file_type: fileType,
+      srv_send_msg: false,
+    };
+    let cacheSource: string;
+    if (attachment.url) {
+      request.url = attachment.url;
+      cacheSource = `url:${attachment.url}`;
+    } else {
+      const data = await this.readAttachmentData(attachment);
+      request.file_data = data.toString("base64");
+      cacheSource = `data:${createHash("sha256").update(data).digest("hex")}`;
     }
 
-    const request: QQMediaUploadRequest = {
-      file_type: toQQMediaFileType(thread, attachment),
-      srv_send_msg: false,
-      url,
-    };
+    const cacheKey = `${thread.type}:${fileType}:${cacheSource}`;
+    const cached = this.getCachedMedia(cacheKey);
+    if (cached) {
+      return cached;
+    }
 
-    return this.apiRequest<QQMediaUploadResponse>(getUploadMediaPath(thread), {
+    const uploaded = await this.apiRequest<QQMediaUploadResponse>(getUploadMediaPath(thread), {
       body: JSON.stringify(request),
       method: "POST",
     });
+    const media = this.toMediaPayload(uploaded);
+    this.setCachedMedia(cacheKey, media);
+    return media;
+  }
+
+  private toMediaPayload(media: QQMediaUploadResponse): QQMediaPayload {
+    return {
+      file_info: media.file_info,
+      ...(media.file_uuid !== undefined ? { file_uuid: media.file_uuid } : {}),
+      ...(media.ttl !== undefined ? { ttl: media.ttl } : {}),
+    };
+  }
+
+  private getCachedMedia(cacheKey: string): QQMediaPayload | null {
+    const cached = this.mediaCache.get(cacheKey);
+    if (!cached) {
+      return null;
+    }
+    if (cached.expiresAt !== null && cached.expiresAt <= Date.now()) {
+      this.mediaCache.delete(cacheKey);
+      return null;
+    }
+    return cached.media;
+  }
+
+  private setCachedMedia(cacheKey: string, media: QQMediaPayload): void {
+    if (media.ttl === undefined) {
+      return;
+    }
+    this.mediaCache.set(cacheKey, {
+      expiresAt: media.ttl === 0 ? null : Date.now() + media.ttl * 1000,
+      media,
+    });
+  }
+
+  private async readAttachmentData(attachment: Attachment): Promise<Buffer> {
+    const data = attachment.data ?? await attachment.fetchData?.();
+    if (!data) {
+      throw new NotImplementedError("QQ media messages require URL-based or binary attachment data.", "attachments");
+    }
+    if (data instanceof Blob) {
+      return Buffer.from(await data.arrayBuffer());
+    }
+    return Buffer.from(data);
   }
 
   private updatePassiveContext(threadId: string, raw: QQRawMessage): void {

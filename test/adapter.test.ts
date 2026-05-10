@@ -841,6 +841,178 @@ describe("QQAdapter outbound rich messages", () => {
       content: "image caption",
       media: {
         file_info: "media-file-info",
+        file_uuid: "media-file-uuid",
+        ttl: 3600,
+      },
+      msg_type: 7,
+    });
+  });
+
+  it("sends binary image attachments through QQ media file_data", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/files") {
+        return Response.json({
+          file_info: "media-file-info",
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        return Response.json({
+          id: "sent-message-1",
+          timestamp: "2026-05-09T12:00:01+08:00",
+        });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.postMessage("qq:c2c/user-openid", {
+      attachments: [
+        {
+          data: Buffer.from("image-bytes"),
+          type: "image",
+        },
+      ],
+      raw: "image caption",
+    });
+
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
+      file_data: Buffer.from("image-bytes").toString("base64"),
+      file_type: 1,
+      srv_send_msg: false,
+    });
+  });
+
+  it("reuses cached QQ media payloads until ttl expires", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    let uploadCount = 0;
+    let messageCount = 0;
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/files") {
+        uploadCount += 1;
+        return Response.json({
+          file_info: "media-file-info",
+          file_uuid: "media-file-uuid",
+          ttl: 3600,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        messageCount += 1;
+        return Response.json({
+          id: `sent-message-${messageCount}`,
+          timestamp: "2026-05-09T12:00:01+08:00",
+        });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    const message = {
+      attachments: [
+        {
+          type: "image" as const,
+          url: "https://example.test/image.png",
+        },
+      ],
+      raw: "image caption",
+    };
+    await adapter.postMessage("qq:c2c/user-openid", message);
+    await adapter.postMessage("qq:c2c/user-openid", message);
+
+    assert.strictEqual(uploadCount, 1);
+    assert.strictEqual(messageCount, 2);
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[3]?.arguments[1]?.body ?? "")), {
+      content: "image caption",
+      media: {
+        file_info: "media-file-info",
+        file_uuid: "media-file-uuid",
+        ttl: 3600,
+      },
+      msg_type: 7,
+    });
+  });
+
+  it("splits multiple image attachments into sequential QQ media messages", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    let uploadCount = 0;
+    let messageCount = 0;
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/files") {
+        uploadCount += 1;
+        return Response.json({
+          file_info: `media-file-info-${uploadCount}`,
+          file_uuid: `media-file-uuid-${uploadCount}`,
+          ttl: 3600,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        messageCount += 1;
+        return Response.json({
+          id: `sent-message-${messageCount}`,
+          timestamp: "2026-05-09T12:00:01+08:00",
+        });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    const sent = await adapter.postMessage("qq:c2c/user-openid", {
+      attachments: [
+        {
+          type: "image",
+          url: "https://example.test/one.png",
+        },
+        {
+          type: "image",
+          url: "https://example.test/two.png",
+        },
+      ],
+      raw: "image caption",
+    });
+
+    assert.strictEqual(sent.id, "sent-message-2");
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[3]?.arguments[1]?.body ?? "")), {
+      content: "image caption",
+      media: {
+        file_info: "media-file-info-1",
+        file_uuid: "media-file-uuid-1",
+        ttl: 3600,
+      },
+      msg_type: 7,
+    });
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[4]?.arguments[1]?.body ?? "")), {
+      content: " ",
+      media: {
+        file_info: "media-file-info-2",
+        file_uuid: "media-file-uuid-2",
+        ttl: 3600,
       },
       msg_type: 7,
     });

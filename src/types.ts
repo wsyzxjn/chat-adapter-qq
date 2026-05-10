@@ -259,6 +259,8 @@ export interface QQArkPayload {
 
 export interface QQMediaPayload {
   file_info: string;
+  file_uuid?: string;
+  ttl?: number;
 }
 
 export interface QQMediaUploadRequest {
