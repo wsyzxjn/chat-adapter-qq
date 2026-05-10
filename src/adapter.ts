@@ -506,6 +506,10 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     await this.apiRequest(path, { method: "DELETE" });
   }
 
+  mentionUser(userId: string): string {
+    return `<qqbot-at-user id="${userId}" />`;
+  }
+
   async editMessage(threadId: string, _messageId: string, _message: AdapterPostableMessage): Promise<RawMessage<QQRawMessage>> {
     const thread = this.decodeThreadId(threadId);
     this.assertFeature(thread, "editMessage");

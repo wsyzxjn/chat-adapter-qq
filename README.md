@@ -283,8 +283,10 @@ QQ_SOCKET_MODE_URL=
 - `/button`
 - `/image`：发送 `test/images/amatsuka.jpeg`
 - `/images`：一次传入两张 `test/images/amatsuka.jpeg`
-- `/jsx-image`：发送包含 `test/images/amatsuka.jpeg` 的 Card/Image JSX 消息
+- `/jsx-image`：发送包含 base64 data URL 图片的 Card 消息（走 media）
+- `/jsx-image-url`：发送包含外部 URL 图片的 Card 消息（走 Markdown，可交错排版）
 - `/ark`：发送 QQ Ark 消息
+- `/mention`：@发送者测试 mentionUser
 
 ## 参考
 

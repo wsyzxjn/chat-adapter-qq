@@ -10,7 +10,11 @@ import {
 } from "chat";
 import type { Attachment, Channel, Thread } from "chat";
 import { createMemoryState } from "@chat-adapter/state-memory";
-import { createQQAdapter, type QQAdapterBaseConfig, type QQSocketModeOptions } from "@amatsuka/chat-adapter-qq";
+import {
+  createQQAdapter,
+  type QQAdapterBaseConfig,
+  type QQSocketModeOptions,
+} from "@amatsuka/chat-adapter-qq";
 
 type QQTestTarget = Channel | Thread;
 
@@ -44,7 +48,13 @@ function envShard(name: string): readonly [number, number] | undefined {
   const parts = value.split(",").map((part) => Number(part.trim()));
   const id = parts[0];
   const count = parts[1];
-  if (id === undefined || count === undefined || !Number.isInteger(id) || !Number.isInteger(count) || count <= 0) {
+  if (
+    id === undefined ||
+    count === undefined ||
+    !Number.isInteger(id) ||
+    !Number.isInteger(count) ||
+    count <= 0
+  ) {
     return undefined;
   }
   return [id, count];
@@ -52,7 +62,9 @@ function envShard(name: string): readonly [number, number] | undefined {
 
 function resolveQQMode(): "socket" | "webhook" {
   const value = optionalEnv("QQ_MODE")?.toLowerCase();
-  return value === "socket" || value === "websocket" || value === "ws" ? "socket" : "webhook";
+  return value === "socket" || value === "websocket" || value === "ws"
+    ? "socket"
+    : "webhook";
 }
 
 const botUserName = optionalEnv("BOT_USERNAME") ?? "qq-test-bot";
@@ -79,21 +91,25 @@ const qqBaseConfig = {
 } satisfies QQAdapterBaseConfig;
 
 const qqSocketModeOptions = {
-  ...(qqSocketModeIntents !== undefined ? { intents: qqSocketModeIntents } : {}),
+  ...(qqSocketModeIntents !== undefined
+    ? { intents: qqSocketModeIntents }
+    : {}),
   ...(qqSocketModeShard !== undefined ? { shard: qqSocketModeShard } : {}),
   ...(qqSocketModeUrl !== undefined ? { url: qqSocketModeUrl } : {}),
 } satisfies QQSocketModeOptions;
 
-const qq = createQQAdapter(qqMode === "socket"
-  ? {
-      ...qqBaseConfig,
-      mode: "socket",
-      socketMode: qqSocketModeOptions,
-    }
-  : {
-      ...qqBaseConfig,
-      mode: "webhook",
-    });
+const qq = createQQAdapter(
+  qqMode === "socket"
+    ? {
+        ...qqBaseConfig,
+        mode: "socket",
+        socketMode: qqSocketModeOptions,
+      }
+    : {
+        ...qqBaseConfig,
+        mode: "webhook",
+      },
+);
 
 export const testBot = new Chat({
   adapters: {
@@ -120,7 +136,34 @@ testBot.onSlashCommand("/ping", async (event) => {
 testBot.onSlashCommand("/md", async (event) => {
   await event.channel.post({
     markdown: [
-      "# QQ Markdown OK",
+      "# 一号标题",
+      "## 二号标题",
+      "",
+      "**加粗文字** 和 __下划线加粗__",
+      "_斜体_ 和 *星号斜体*",
+      "***加粗斜体***",
+      "~~删除线~~",
+      "",
+      "[🔗腾讯网](https://www.qq.com)",
+      "",
+      "> 引用：青青子衿，悠悠我心",
+      "> 第二行引用",
+      "",
+      "***",
+      "",
+      "无序列表：",
+      "- 列表项 A",
+      "- 列表项 B",
+      "",
+      "有序列表：",
+      "1. 第一步",
+      "2. 第二步",
+      "",
+      "嵌套列表：",
+      "1. 一级",
+      "    - 二级无序",
+      "2. 另一项",
+      "    1. 二级有序",
       "",
       `- time: ${new Date().toISOString()}`,
       "- adapter: @amatsuka/chat-adapter-qq",
@@ -163,8 +206,18 @@ testBot.onSlashCommand("/jsx-image", async (event) => {
   await postJsxImageTest(event.channel);
 });
 
+testBot.onSlashCommand("/jsx-image-url", async (event) => {
+  await postJsxImageUrlTest(event.channel);
+});
+
 testBot.onSlashCommand("/ark", async (event) => {
   await postArkTest(event.channel);
+});
+
+testBot.onSlashCommand("/mention", async (event) => {
+  await event.channel.post(
+    ` mention test: ${event.channel.mentionUser(event.user.userId)}`,
+  );
 });
 
 testBot.onDirectMessage(async (thread, message) => {
@@ -187,9 +240,7 @@ testBot.onAction("qq_test_ok", async (event) => {
 
 async function postImageTest(thread: QQTestTarget): Promise<void> {
   await thread.post({
-    attachments: [
-      await readTestImageAttachment(),
-    ],
+    attachments: [await readTestImageAttachment()],
     raw: `QQ media image test: ${new Date().toISOString()}`,
   });
 }
@@ -198,9 +249,12 @@ async function postImagesTest(thread: QQTestTarget): Promise<void> {
   await thread.post({
     attachments: [
       await readTestImageAttachment(),
-      await readTestImageAttachment(),
+      {
+        type: "image",
+        url: "https://1839696043.v.123pan.cn/1839696043/36371456",
+      },
     ],
-    raw: "QQ media multi-image test",
+    raw: "",
   });
 }
 
@@ -216,6 +270,23 @@ async function postJsxImageTest(thread: QQTestTarget): Promise<void> {
         },
       ],
       title: "QQ JSX Card",
+    }),
+  );
+}
+
+async function postJsxImageUrlTest(thread: QQTestTarget): Promise<void> {
+  await thread.post(
+    Card({
+      children: [
+        CardText("文字在图片上方"),
+        {
+          alt: "External Image",
+          type: "image",
+          url: "https://1839696043.v.123pan.cn/1839696043/36371456",
+        },
+        CardText("文字在图片下方"),
+      ],
+      title: "QQ JSX URL Image",
     }),
   );
 }

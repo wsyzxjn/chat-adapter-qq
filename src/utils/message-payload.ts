@@ -308,7 +308,7 @@ function renderCardChildMarkdown(child: CardChild): string | null {
     case "fields":
       return child.children.map((field) => `**${field.label}**: ${field.value}`).join("\n");
     case "image":
-      return child.alt ? `图片：${child.alt}` : null;
+      return null;
     case "link":
       return `[${child.label}](${child.url})`;
     case "section":
