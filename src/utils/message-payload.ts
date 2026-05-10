@@ -1,5 +1,6 @@
 import type {
   AdapterPostableMessage,
+  Attachment,
   CardElement,
   Message,
   PostableAst,
@@ -27,16 +28,30 @@ export function toAttachments(
   if (!attachments?.length) {
     return [];
   }
-  return attachments.map((attachment) => ({
-    fetchData: undefined,
-    height: attachment.height,
-    mimeType: attachment.content_type,
-    name: attachment.filename,
-    size: attachment.size,
-    type: attachment.content_type?.startsWith("image/") ? "image" : "file",
-    url: attachment.url,
-    width: attachment.width,
-  }));
+  return attachments.map((attachment) => {
+    const output: Attachment = {
+      type: attachment.content_type?.startsWith("image/") ? "image" : "file",
+    };
+    if (attachment.height !== undefined) {
+      output.height = attachment.height;
+    }
+    if (attachment.content_type !== undefined) {
+      output.mimeType = attachment.content_type;
+    }
+    if (attachment.filename !== undefined) {
+      output.name = attachment.filename;
+    }
+    if (attachment.size !== undefined) {
+      output.size = attachment.size;
+    }
+    if (attachment.url !== undefined) {
+      output.url = attachment.url;
+    }
+    if (attachment.width !== undefined) {
+      output.width = attachment.width;
+    }
+    return output;
+  });
 }
 
 export function buildMessageContentPayload(

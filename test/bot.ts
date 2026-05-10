@@ -7,7 +7,7 @@ import {
   LinkButton,
 } from "chat";
 import { createMemoryState } from "@chat-adapter/state-memory";
-import { createQQAdapter } from "@amatsuka/chat-adapter-qq";
+import { createQQAdapter, type QQAdapterBaseConfig, type QQSocketModeOptions } from "@amatsuka/chat-adapter-qq";
 
 function optionalEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
@@ -36,8 +36,10 @@ function envShard(name: string): readonly [number, number] | undefined {
   if (!value) {
     return undefined;
   }
-  const [id, count] = value.split(",").map((part) => Number(part.trim()));
-  if (!Number.isInteger(id) || !Number.isInteger(count) || count <= 0) {
+  const parts = value.split(",").map((part) => Number(part.trim()));
+  const id = parts[0];
+  const count = parts[1];
+  if (id === undefined || count === undefined || !Number.isInteger(id) || !Number.isInteger(count) || count <= 0) {
     return undefined;
   }
   return [id, count];
@@ -52,24 +54,40 @@ const botUserName = optionalEnv("BOT_USERNAME") ?? "qq-test-bot";
 const qqClientSecret =
   optionalEnv("QQ_CLIENT_SECRET") ?? optionalEnv("QQ_SECRET") ?? "";
 const qqMode = resolveQQMode();
+const qqBotSecret = optionalEnv("QQ_BOT_SECRET");
+const qqBotUserId = optionalEnv("QQ_BOT_USER_ID");
+const qqSocketModeIntents = envNumber("QQ_SOCKET_MODE_INTENTS");
+const qqSocketModeShard = envShard("QQ_SOCKET_MODE_SHARD");
+const qqSocketModeUrl = optionalEnv("QQ_SOCKET_MODE_URL");
 
-const qq = createQQAdapter({
+const qqBaseConfig = {
   appId: optionalEnv("QQ_APP_ID") ?? "",
-  botSecret: optionalEnv("QQ_BOT_SECRET"),
-  botUserId: optionalEnv("QQ_BOT_USER_ID"),
   clientSecret: qqClientSecret,
-  mode: qqMode,
   requireAppIdHeader: envFlag("QQ_REQUIRE_APP_ID_HEADER", true),
   sandbox: envFlag("QQ_SANDBOX", false),
-  socketMode: {
-    intents: envNumber("QQ_SOCKET_MODE_INTENTS"),
-    shard: envShard("QQ_SOCKET_MODE_SHARD"),
-    url: optionalEnv("QQ_SOCKET_MODE_URL"),
-  },
   strictWebhookEvents: envFlag("QQ_STRICT_WEBHOOK_EVENTS", false),
   userName: botUserName,
   verifySignature: envFlag("QQ_VERIFY_SIGNATURE", true),
-});
+  ...(qqBotSecret !== undefined ? { botSecret: qqBotSecret } : {}),
+  ...(qqBotUserId !== undefined ? { botUserId: qqBotUserId } : {}),
+} satisfies QQAdapterBaseConfig;
+
+const qqSocketModeOptions = {
+  ...(qqSocketModeIntents !== undefined ? { intents: qqSocketModeIntents } : {}),
+  ...(qqSocketModeShard !== undefined ? { shard: qqSocketModeShard } : {}),
+  ...(qqSocketModeUrl !== undefined ? { url: qqSocketModeUrl } : {}),
+} satisfies QQSocketModeOptions;
+
+const qq = createQQAdapter(qqMode === "socket"
+  ? {
+      ...qqBaseConfig,
+      mode: "socket",
+      socketMode: qqSocketModeOptions,
+    }
+  : {
+      ...qqBaseConfig,
+      mode: "webhook",
+    });
 
 export const testBot = new Chat({
   adapters: {

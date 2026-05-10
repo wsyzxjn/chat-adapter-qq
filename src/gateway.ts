@@ -12,6 +12,7 @@ import {
 } from "./constants.js";
 import type {
   QQGatewayBotResponse,
+  QQSocketModeMessageData,
   QQSocketModeOptions,
   QQSocketModeWebSocket,
   QQSocketModeWebSocketFactory,
@@ -126,8 +127,8 @@ export class QQGatewayClient {
     });
   }
 
-  private async handleSocketMessage(event: Event | MessageEvent): Promise<void> {
-    const data = "data" in event ? event.data : undefined;
+  private async handleSocketMessage(event: MessageEvent<QQSocketModeMessageData>): Promise<void> {
+    const data = event.data;
     const text = typeof data === "string" ? data : data instanceof ArrayBuffer ? new TextDecoder().decode(data) : "";
     if (!text) {
       this.logger.warn("QQ gateway ignored non-text message");

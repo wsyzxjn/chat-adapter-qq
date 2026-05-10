@@ -6,7 +6,7 @@ export function createBotSeed(secret: string): Uint8Array {
   }
   const seed = new Uint8Array(32);
   for (let i = 0; i < seed.length; i += 1) {
-    seed[i] = source[i % source.length];
+    seed[i] = source[i % source.length]!;
   }
   return seed;
 }
@@ -33,7 +33,7 @@ export function hexToBytes(hex: string): Uint8Array {
 export function bytesToHex(bytes: Uint8Array): string {
   let hex = "";
   for (let i = 0; i < bytes.length; i++) {
-    hex += bytes[i].toString(16).padStart(2, "0");
+    hex += bytes[i]!.toString(16).padStart(2, "0");
   }
   return hex;
 }

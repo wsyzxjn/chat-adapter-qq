@@ -1,4 +1,9 @@
-import type { QQThreadType } from "./types.js";
+import type {
+  QQActionEventType,
+  QQMessageEventType,
+  QQPlatformEventType,
+  QQThreadType,
+} from "./types.js";
 
 /** Webhook callback dispatch opcode. */
 export const CALLBACK_DISPATCH_OPCODE = 0;
@@ -59,18 +64,20 @@ export const SIGNATURE_TIMESTAMP_HEADER = "X-Signature-Timestamp";
 export const APP_ID_HEADER = "X-Bot-Appid";
 
 /** QQ webhook event types treated as inbound message events. */
-export const MESSAGE_EVENT_TYPES = new Set([
+export const MESSAGE_EVENT_TYPES = [
   "C2C_MESSAGE_CREATE",
   "GROUP_AT_MESSAGE_CREATE",
-]);
+] as const satisfies readonly QQMessageEventType[];
+const MESSAGE_EVENT_TYPE_SET: ReadonlySet<string> = new Set(MESSAGE_EVENT_TYPES);
 
 /** QQ webhook event types treated as Chat SDK action events. */
-export const ACTION_EVENT_TYPES = new Set([
+export const ACTION_EVENT_TYPES = [
   "INTERACTION_CREATE",
-]);
+] as const satisfies readonly QQActionEventType[];
+const ACTION_EVENT_TYPE_SET: ReadonlySet<string> = new Set(ACTION_EVENT_TYPES);
 
 /** QQ non-message dispatch events known by this adapter's current C2C/GROUP scope. */
-export const PLATFORM_EVENT_TYPES = new Set([
+export const PLATFORM_EVENT_TYPES = [
   "C2C_MSG_RECEIVE",
   "FRIEND_ADD",
   "FRIEND_DEL",
@@ -78,7 +85,20 @@ export const PLATFORM_EVENT_TYPES = new Set([
   "GROUP_DEL_ROBOT",
   "GROUP_MSG_RECEIVE",
   "GROUP_REJECT_ADD_ROBOT",
-]);
+] as const satisfies readonly QQPlatformEventType[];
+const PLATFORM_EVENT_TYPE_SET: ReadonlySet<string> = new Set(PLATFORM_EVENT_TYPES);
+
+export function isQQActionEventType(type: string | undefined): type is QQActionEventType {
+  return typeof type === "string" && ACTION_EVENT_TYPE_SET.has(type);
+}
+
+export function isQQMessageEventType(type: string | undefined): type is QQMessageEventType {
+  return typeof type === "string" && MESSAGE_EVENT_TYPE_SET.has(type);
+}
+
+export function isQQPlatformEventType(type: string | undefined): type is QQPlatformEventType {
+  return typeof type === "string" && PLATFORM_EVENT_TYPE_SET.has(type);
+}
 
 export type QQFeature = "addReaction" | "deleteMessage" | "editMessage" | "postMessage" | "removeReaction";
 /**

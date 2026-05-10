@@ -35,11 +35,12 @@ export type QQThreadType = QQThreadId["type"];
 /** Runtime transport mode used for receiving QQ events. */
 export type QQAdapterMode = "socket" | "webhook";
 
+export type QQSocketModeMessageData = ArrayBuffer | string;
+
 export interface QQSocketModeWebSocket {
-  addEventListener(
-    type: "close" | "error" | "message" | "open",
-    listener: (event: Event | MessageEvent) => void,
-  ): void;
+  addEventListener(type: "message", listener: (event: MessageEvent<QQSocketModeMessageData>) => void): void;
+  addEventListener(type: "close", listener: (event: CloseEvent) => void): void;
+  addEventListener(type: "error" | "open", listener: (event: Event) => void): void;
   close(code?: number, reason?: string): void;
   send(data: string): void;
 }
@@ -66,7 +67,7 @@ export interface QQSocketModeOptions {
 }
 
 /** QQ adapter runtime configuration. */
-export interface QQAdapterConfig {
+export interface QQAdapterBaseConfig {
   /** Advanced: whether to send QQ interaction ACK API calls for button events. Defaults to true. */
   acknowledgeInteractions?: boolean;
   /** Advanced/test: override QQ OpenAPI base URL. */
@@ -79,12 +80,8 @@ export interface QQAdapterConfig {
   botUserId?: string;
   /** QQ bot client secret for access token retrieval. */
   clientSecret: string;
-  /** Socket Mode connection options. */
-  socketMode?: QQSocketModeOptions;
   /** Logger implementation from Chat SDK. */
   logger?: Logger;
-  /** Event receiving mode. Defaults to webhook. */
-  mode?: QQAdapterMode;
   /** Advanced security option: whether webhook requests must include and match `X-Bot-Appid`. */
   requireAppIdHeader?: boolean;
   /** HTTP request timeout in milliseconds. */
@@ -103,8 +100,25 @@ export interface QQAdapterConfig {
   webhookReplayWindowSec?: number;
 }
 
-/** Generic QQ webhook envelope. */
-export interface QQWebhookPayload<TData = unknown> {
+export interface QQWebhookAdapterConfig extends QQAdapterBaseConfig {
+  /** Event receiving mode. Defaults to webhook. */
+  mode?: "webhook";
+  /** Socket Mode options are only used when mode is socket. */
+  socketMode?: never;
+}
+
+export interface QQSocketModeAdapterConfig extends QQAdapterBaseConfig {
+  /** Start QQ Socket Mode during Chat initialization. */
+  mode: "socket";
+  /** Socket Mode connection options. */
+  socketMode?: QQSocketModeOptions;
+}
+
+/** QQ adapter runtime configuration. */
+export type QQAdapterConfig = QQSocketModeAdapterConfig | QQWebhookAdapterConfig;
+
+/** Generic QQ webhook/gateway envelope. */
+export interface QQWebhookPayload<TData = unknown, TType extends string = string> {
   /** Event data payload. */
   d?: TData;
   /** Callback event id. */
@@ -114,8 +128,17 @@ export interface QQWebhookPayload<TData = unknown> {
   /** Sequence number for callback ACK. */
   s?: number;
   /** Event type string, e.g. `GROUP_AT_MESSAGE_CREATE`. */
-  t?: string;
+  t?: TType;
 }
+
+/** QQ dispatch event types treated as inbound messages by Chat SDK. */
+export type QQMessageEventType = "C2C_MESSAGE_CREATE" | "GROUP_AT_MESSAGE_CREATE";
+
+/** QQ dispatch event types treated as Chat SDK actions. */
+export type QQActionEventType = "INTERACTION_CREATE";
+
+/** QQ gateway lifecycle dispatch events. */
+export type QQGatewayLifecycleEventType = "READY" | "RESUMED";
 
 /** QQ webhook validation payload (`op=13`). */
 export interface QQWebhookValidationData {
@@ -254,6 +277,17 @@ export interface QQInteractionPayload {
   version?: number;
 }
 
+export interface QQThreadResolvableEventData {
+  author?: QQMessageAuthor;
+  event_id?: string;
+  group_id?: string;
+  group_openid?: string;
+  id?: string;
+  msg_id?: string;
+  openid?: string;
+  user_openid?: string;
+}
+
 export type QQPlatformEventType =
   | "C2C_MSG_RECEIVE"
   | "FRIEND_ADD"
@@ -263,16 +297,41 @@ export type QQPlatformEventType =
   | "GROUP_MSG_RECEIVE"
   | "GROUP_REJECT_ADD_ROBOT";
 
-export interface QQPlatformEvent<TData = unknown, TType extends QQPlatformEventType = QQPlatformEventType> {
-  data: TData;
+export interface QQMessageEventDataMap {
+  C2C_MESSAGE_CREATE: QQIncomingMessage;
+  GROUP_AT_MESSAGE_CREATE: QQIncomingMessage;
+}
+
+export interface QQActionEventDataMap {
+  INTERACTION_CREATE: QQInteractionPayload;
+}
+
+export interface QQPlatformEventDataMap {
+  C2C_MSG_RECEIVE: QQThreadResolvableEventData;
+  FRIEND_ADD: QQThreadResolvableEventData;
+  FRIEND_DEL: QQThreadResolvableEventData;
+  GROUP_ADD_ROBOT: QQThreadResolvableEventData;
+  GROUP_DEL_ROBOT: QQThreadResolvableEventData;
+  GROUP_MSG_RECEIVE: QQThreadResolvableEventData;
+  GROUP_REJECT_ADD_ROBOT: QQThreadResolvableEventData;
+}
+
+export type QQKnownDispatchEventType =
+  | QQActionEventType
+  | QQGatewayLifecycleEventType
+  | QQMessageEventType
+  | QQPlatformEventType;
+
+export interface QQPlatformEvent<TType extends QQPlatformEventType = QQPlatformEventType> {
+  data: QQPlatformEventDataMap[TType] | undefined;
   eventId: string;
-  payload: QQWebhookPayload<TData>;
+  payload: QQWebhookPayload<QQPlatformEventDataMap[TType], TType>;
   threadId?: string;
   type: TType;
 }
 
 export type QQPlatformEventHandler<TType extends QQPlatformEventType = QQPlatformEventType> = (
-  event: QQPlatformEvent<unknown, TType>,
+  event: QQPlatformEvent<TType>,
 ) => Promise<void> | void;
 
 /** Inbound message payload from webhook/OpenAPI. */

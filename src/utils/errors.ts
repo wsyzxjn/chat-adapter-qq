@@ -102,7 +102,14 @@ function parseQQOpenApiError(responseBody: string | undefined): QQParsedOpenApiE
     const root = parsed as Record<string, unknown>;
     const code = toIntegerCode(root.code ?? root.errcode);
     const message = toErrorMessage(root.message ?? root.msg);
-    return { code, message };
+    const error: QQParsedOpenApiError = {};
+    if (code !== undefined) {
+      error.code = code;
+    }
+    if (message !== undefined) {
+      error.message = message;
+    }
+    return error;
   } catch {
     return {};
   }

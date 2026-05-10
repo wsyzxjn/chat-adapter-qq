@@ -1,6 +1,7 @@
 import type { ChatInstance, Logger } from "chat";
 import { Actions, Button, Card, CardText, LinkButton } from "chat";
 import { QQAdapter } from "@amatsuka/chat-adapter-qq";
+import type { QQSocketModeAdapterConfig, QQWebhookAdapterConfig } from "@amatsuka/chat-adapter-qq";
 import { describe, it, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 
@@ -11,12 +12,26 @@ const ED25519_PRIVATE_KEY_DER_PREFIX = new Uint8Array([
   0x04, 0x22, 0x04, 0x20,
 ]);
 
-function createAdapter(config: Partial<ConstructorParameters<typeof QQAdapter>[0]> = {}): QQAdapter {
-  return new QQAdapter({
+type SocketModeMessageData = ArrayBuffer | string;
+type SocketModeEvent = CloseEvent | Event | MessageEvent<SocketModeMessageData>;
+type SocketModeListener =
+  | ((event: CloseEvent) => void)
+  | ((event: Event) => void)
+  | ((event: MessageEvent<SocketModeMessageData>) => void);
+
+type TestQQAdapterConfig =
+  | (Partial<Omit<QQSocketModeAdapterConfig, "appId" | "clientSecret" | "mode">> & { mode: "socket" })
+  | Partial<Omit<QQWebhookAdapterConfig, "appId" | "clientSecret">>;
+
+function createAdapter(config: TestQQAdapterConfig = {}): QQAdapter {
+  const baseConfig = {
     appId: APP_ID,
     clientSecret: BOT_SECRET,
     logger: createSilentLogger(),
     verifySignature: false,
+  };
+  return new QQAdapter({
+    ...baseConfig,
     ...config,
   });
 }
@@ -36,7 +51,7 @@ function createBotSeed(secret: string): Uint8Array {
   const source = new TextEncoder().encode(secret);
   const seed = new Uint8Array(32);
   for (let index = 0; index < seed.length; index += 1) {
-    seed[index] = source[index % source.length];
+    seed[index] = source[index % source.length]!;
   }
   return seed;
 }
@@ -99,11 +114,17 @@ afterEach(() => {
 
 class MockSocketModeSocket {
   readonly sent: string[] = [];
-  private readonly listeners = new Map<string, Array<(event: Event | MessageEvent) => void>>();
+  private readonly listeners = new Map<string, Array<(event: SocketModeEvent) => void>>();
 
-  addEventListener(type: "close" | "error" | "message" | "open", listener: (event: Event | MessageEvent) => void): void {
+  addEventListener(type: "message", listener: (event: MessageEvent<SocketModeMessageData>) => void): void;
+  addEventListener(type: "close", listener: (event: CloseEvent) => void): void;
+  addEventListener(type: "error" | "open", listener: (event: Event) => void): void;
+  addEventListener(
+    type: "close" | "error" | "message" | "open",
+    listener: SocketModeListener,
+  ): void {
     const listeners = this.listeners.get(type) ?? [];
-    listeners.push(listener);
+    listeners.push(listener as (event: SocketModeEvent) => void);
     this.listeners.set(type, listeners);
   }
 
@@ -115,7 +136,7 @@ class MockSocketModeSocket {
     this.sent.push(data);
   }
 
-  emit(type: "close" | "error" | "message" | "open", event: Event | MessageEvent): void {
+  emit(type: "close" | "error" | "message" | "open", event: SocketModeEvent): void {
     for (const listener of this.listeners.get(type) ?? []) {
       listener(event);
     }
@@ -802,9 +823,7 @@ describe("QQAdapter socket mode", () => {
     const adapter = createAdapter();
     const processMessage = await initializeWithProcessSpy(adapter);
 
-    await (adapter as QQAdapter & {
-      handleSocketModePayload: (payload: Record<string, unknown>) => Promise<void>;
-    }).handleSocketModePayload({
+    await adapter.handleSocketModePayload({
       d: {
         author: {
           user_openid: "user-openid",
@@ -830,6 +849,7 @@ describe("QQAdapter socket mode", () => {
   it("connects in socket mode and identifies after hello", async () => {
     const sockets: MockSocketModeSocket[] = [];
     const adapter = createAdapter({
+      mode: "socket",
       socketMode: {
         reconnect: false,
         webSocketFactory: (url: string) => {
@@ -840,7 +860,7 @@ describe("QQAdapter socket mode", () => {
         },
       },
       tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
-    } as Partial<ConstructorParameters<typeof QQAdapter>[0]>);
+    });
     const fetchMock = mock.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://tokens.example.test/app/getAppAccessToken") {
@@ -865,11 +885,7 @@ describe("QQAdapter socket mode", () => {
     });
     globalThis.fetch = fetchMock as typeof globalThis.fetch;
 
-    const socketModeAdapter = adapter as QQAdapter & {
-      startSocketMode: () => Promise<void>;
-      stopSocketMode: () => Promise<void>;
-    };
-    const start = socketModeAdapter.startSocketMode();
+    const start = adapter.startSocketMode();
     await nextTick();
     assert.strictEqual(sockets.length, 1);
     sockets[0]!.emit("open", new Event("open"));
@@ -898,6 +914,6 @@ describe("QQAdapter socket mode", () => {
       },
     ]);
 
-    await socketModeAdapter.stopSocketMode();
+    await adapter.stopSocketMode();
   });
 });

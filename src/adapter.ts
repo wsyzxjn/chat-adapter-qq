@@ -18,7 +18,6 @@ import type {
 import { ChatError, ConsoleLogger, Message, NotImplementedError, RateLimitError } from "chat";
 import {
   APP_ID_HEADER,
-  ACTION_EVENT_TYPES,
   CALLBACK_ACK_OPCODE,
   CALLBACK_DISPATCH_OPCODE,
   CALLBACK_VALIDATION_OPCODE,
@@ -27,11 +26,12 @@ import {
   DEFAULT_TOKEN_ENDPOINT,
   FEATURE_SUPPORT,
   MAX_CACHE_MESSAGES_PER_THREAD,
-  MESSAGE_EVENT_TYPES,
-  PLATFORM_EVENT_TYPES,
   SANDBOX_API_BASE_URL,
   SIGNATURE_HEADER,
   SIGNATURE_TIMESTAMP_HEADER,
+  isQQActionEventType,
+  isQQMessageEventType,
+  isQQPlatformEventType,
   type QQFeature,
 } from "./constants";
 import { QQFormatConverter } from "./format-converter.js";
@@ -39,15 +39,21 @@ import { QQGatewayClient } from "./gateway.js";
 import type {
   QQAccessTokenResponse,
   QQAdapterConfig,
+  QQActionEventDataMap,
   QQGatewayBotResponse,
   QQIncomingMessage,
   QQInteractionPayload,
+  QQMessageEventType,
+  QQMessageEventDataMap,
   QQPlatformEvent,
+  QQPlatformEventDataMap,
   QQPlatformEventHandler,
   QQPlatformEventType,
   QQRawMessage,
   QQSendMessageRequest,
+  QQSentMessage,
   QQSocketModeOptions,
+  QQThreadResolvableEventData,
   QQThreadType,
   QQThreadId,
   QQWebhookPayload,
@@ -163,7 +169,9 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
 
     this.config = config;
     this.userName = config.userName ?? "qq-bot";
-    this.botUserId = config.botUserId;
+    if (config.botUserId !== undefined) {
+      this.botUserId = config.botUserId;
+    }
     this.logger = config.logger ?? new ConsoleLogger();
     this.apiBaseUrl = config.apiBaseUrl ?? (config.sandbox ? SANDBOX_API_BASE_URL : DEFAULT_API_BASE_URL);
   }
@@ -396,6 +404,11 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     const isMe = raw._chat_is_outbound === true || (this.botUserId ? authorId === this.botUserId : false);
     const dateSent = parseQQTimestamp(raw.timestamp, true);
     const editedAt = parseQQTimestamp(raw.edited_timestamp, false);
+    const metadata = {
+      dateSent,
+      edited: Boolean(editedAt),
+      ...(editedAt ? { editedAt } : {}),
+    };
 
     return new Message({
       attachments: toAttachments(raw.attachments),
@@ -408,11 +421,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       },
       formatted: this.converter.toAst(content),
       id: raw.id ?? raw.msg_id ?? crypto.randomUUID(),
-      metadata: {
-        dateSent,
-        edited: Boolean(editedAt),
-        editedAt: editedAt ?? undefined,
-      },
+      metadata,
       raw,
       text: this.converter.extractPlainText(content),
       threadId,
@@ -426,10 +435,11 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     const payload = this.buildSendPayload(threadId, message);
     const path = getPostMessagePath(thread);
 
-    const sentRaw = await this.apiRequest<QQRawMessage>(path, {
+    const sentRaw = await this.apiRequest<QQSentMessage>(path, {
       body: JSON.stringify(payload),
       method: "POST",
     });
+    const content = sentRaw.content ?? payload.content ?? payload.markdown?.content;
 
     const enrichedRaw: QQRawMessage = {
       ...sentRaw,
@@ -437,10 +447,12 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       _chat_thread_id: toThreadStorageId(thread),
       _chat_thread_type: thread.type,
       author: sentRaw.author ?? this.getOutboundAuthor(thread.type),
-      content: sentRaw.content ?? payload.content ?? payload.markdown?.content,
       id: sentRaw.id ?? crypto.randomUUID(),
-      msg_id: sentRaw.msg_id ?? payload.msg_id,
       timestamp: sentRaw.timestamp ?? new Date().toISOString(),
+      ...(content !== undefined ? { content } : {}),
+      ...(sentRaw.msg_id !== undefined || payload.msg_id !== undefined
+        ? { msg_id: sentRaw.msg_id ?? payload.msg_id }
+        : {}),
     };
 
     const parsed = this.parseMessage(enrichedRaw);
@@ -545,7 +557,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       const end = Math.min(all.length, start + limit);
       return {
         messages: all.slice(start, end),
-        nextCursor: end < all.length ? String(end) : undefined,
+        ...(end < all.length ? { nextCursor: String(end) } : {}),
       };
     }
 
@@ -553,7 +565,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     const start = Math.max(0, end - limit);
     return {
       messages: all.slice(start, end),
-      nextCursor: start > 0 ? String(start) : undefined,
+      ...(start > 0 ? { nextCursor: String(start) } : {}),
     };
   }
 
@@ -593,19 +605,17 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
         event_id: this.resolvePayloadEventId(payload),
       });
       await this.acknowledgeInteraction(action.triggerId);
-      this.chat.processAction(
-        {
-          actionId: action.actionId,
-          adapter: this,
-          messageId: action.messageId,
-          raw: action.raw,
-          threadId: action.threadId,
-          triggerId: action.triggerId,
-          user: action.user,
-          value: action.value,
-        },
-        options,
-      );
+      const actionEvent: Parameters<ChatInstance["processAction"]>[0] = {
+        actionId: action.actionId,
+        adapter: this,
+        messageId: action.messageId,
+        raw: action.raw,
+        threadId: action.threadId,
+        triggerId: action.triggerId,
+        user: action.user,
+        ...(action.value !== undefined ? { value: action.value } : {}),
+      };
+      this.chat.processAction(actionEvent, options);
       return "handled";
     }
 
@@ -699,7 +709,8 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       }
 
       const signature = hexToBytes(signatureHex);
-      if (signature.length !== QQ_SIGNATURE_SIZE || (signature[QQ_SIGNATURE_SIZE - 1] & 0xe0) !== 0) {
+      const lastSignatureByte = signature[QQ_SIGNATURE_SIZE - 1];
+      if (signature.length !== QQ_SIGNATURE_SIZE || lastSignatureByte === undefined || (lastSignatureByte & 0xe0) !== 0) {
         return {
           ok: false,
           reason: "Invalid signature length.",
@@ -789,14 +800,14 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   }
 
   private extractMessageEvent(payload: QQWebhookPayload<unknown>): ParsedMessageEvent | null {
-    if (!payload.t || !MESSAGE_EVENT_TYPES.has(payload.t)) {
+    if (!isQQMessageEventType(payload.t)) {
       return null;
     }
     if (!payload.d || typeof payload.d !== "object") {
       return null;
     }
 
-    const raw = payload.d as QQIncomingMessage;
+    const raw = payload.d as QQMessageEventDataMap[typeof payload.t];
     const thread = this.resolveThreadFromEvent(payload.t, raw);
     if (!thread) {
       return null;
@@ -813,14 +824,14 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   }
 
   private extractActionEvent(payload: QQWebhookPayload<unknown>): ParsedActionEvent | null {
-    if (!payload.t || !ACTION_EVENT_TYPES.has(payload.t)) {
+    if (!isQQActionEventType(payload.t)) {
       return null;
     }
     if (!payload.d || typeof payload.d !== "object") {
       return null;
     }
 
-    const raw = payload.d as QQInteractionPayload;
+    const raw = payload.d as QQActionEventDataMap[typeof payload.t];
     const thread = this.resolveThreadFromInteraction(raw);
     if (!thread) {
       this.logger.warn("QQ interaction event is missing thread identifiers", {
@@ -845,7 +856,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     }
 
     const authorId = this.resolveInteractionAuthorId(raw);
-    return {
+    const event: ParsedActionEvent = {
       actionId,
       messageId: resolved?.message_id ?? raw.message_id ?? this.resolvePayloadEventId(payload),
       raw,
@@ -858,18 +869,21 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
         userId: authorId,
         userName: authorId,
       },
-      value: resolved?.button_data,
     };
+    if (resolved?.button_data !== undefined) {
+      event.value = resolved.button_data;
+    }
+    return event;
   }
 
   private extractPlatformEvent(payload: QQWebhookPayload<unknown>): QQPlatformEvent | null {
-    if (!payload.t || !PLATFORM_EVENT_TYPES.has(payload.t)) {
+    if (!isQQPlatformEventType(payload.t)) {
       return null;
     }
 
     let threadId: string | undefined;
     if (payload.d && typeof payload.d === "object") {
-      const raw = payload.d as QQIncomingMessage;
+      const raw = payload.d as QQPlatformEventDataMap[typeof payload.t];
       const thread = this.resolveThreadFromEvent(payload.t, raw);
       if (thread) {
         threadId = this.encodeThreadId(thread);
@@ -881,12 +895,13 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       }
     }
 
+    const typedPayload = payload as QQWebhookPayload<QQPlatformEventDataMap[typeof payload.t], typeof payload.t>;
     return {
-      data: payload.d,
+      ...(threadId !== undefined ? { threadId } : {}),
+      data: typedPayload.d,
       eventId: this.resolvePayloadEventId(payload),
-      payload,
-      threadId,
-      type: payload.t as QQPlatformEventType,
+      payload: typedPayload,
+      type: payload.t,
     };
   }
 
@@ -963,7 +978,10 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     }
   }
 
-  private resolveThreadFromEvent(eventType: string, raw: QQIncomingMessage): QQThreadId | null {
+  private resolveThreadFromEvent(
+    eventType: QQMessageEventType | QQPlatformEventType,
+    raw: QQIncomingMessage | QQThreadResolvableEventData,
+  ): QQThreadId | null {
     if (eventType.startsWith("GROUP_")) {
       const groupOpenId = raw.group_openid ?? raw.group_id;
       return groupOpenId ? { groupOpenId, type: "group" } : null;
@@ -1011,14 +1029,14 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     switch (type) {
       case "group":
         return {
-          member_openid: this.botUserId,
           username: this.userName,
+          ...(this.botUserId !== undefined ? { member_openid: this.botUserId } : {}),
         };
       case "c2c":
       case "guild_channel":
         return {
-          user_openid: this.botUserId,
           username: this.userName,
+          ...(this.botUserId !== undefined ? { user_openid: this.botUserId } : {}),
         };
       default:
         return assertNever(type);
@@ -1138,7 +1156,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     return this.apiRequest<QQGatewayBotResponse>("/gateway/bot", { method: "GET" });
   }
 
-  private async apiRequest<T = Record<string, unknown>>(
+  private async apiRequest<T = unknown>(
     path: string,
     init: Omit<RequestInit, "headers"> & { headers?: Record<string, string> },
   ): Promise<T> {
