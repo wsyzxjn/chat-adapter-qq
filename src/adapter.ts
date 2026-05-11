@@ -60,9 +60,12 @@ import type {
   QQSendMessageRequest,
   QQSentMessage,
   QQSocketModeOptions,
+  QQStreamMessageRequest,
+  QQStreamMessageResponse,
   QQThreadResolvableEventData,
   QQThreadType,
   QQThreadId,
+  QQC2CThreadId,
   QQWebhookPayload,
 } from "./types.js";
 import {
@@ -540,12 +543,185 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     textStream: AsyncIterable<string | StreamChunk>,
     _options?: StreamOptions,
   ): Promise<RawMessage<QQRawMessage>> {
-    let content = "";
-    for await (const chunk of textStream) {
-      content += streamChunkToText(chunk);
+    const thread = this.decodeThreadId(threadId);
+    this.logger.debug("QQ stream called", { threadId, threadType: thread.type });
+
+    // Group scene: fallback to regular postMessage after collecting all content.
+    if (thread.type !== "c2c") {
+      this.logger.debug("QQ stream: group scene, using fallback");
+      return this.streamAsFallback(threadId, textStream);
     }
 
+    // C2C scene: use QQ native stream_messages API.
+    return this.streamC2C(threadId, thread, textStream);
+  }
+
+  private async streamAsFallback(
+    threadId: string,
+    textStream: AsyncIterable<string | StreamChunk>,
+  ): Promise<RawMessage<QQRawMessage>> {
+    this.logger.debug("QQ streamAsFallback started");
+    let content = "";
+    let chunkCount = 0;
+    for await (const chunk of textStream) {
+      chunkCount++;
+      content += streamChunkToText(chunk);
+    }
+    this.logger.debug("QQ streamAsFallback completed", { chunkCount, contentLength: content.length });
     return this.postMessage(threadId, content || " ");
+  }
+
+  private async streamC2C(
+    threadId: string,
+    thread: QQC2CThreadId,
+    textStream: AsyncIterable<string | StreamChunk>,
+  ): Promise<RawMessage<QQRawMessage>> {
+    this.logger.debug("QQ streamC2C started", { threadId, userOpenId: thread.userOpenId });
+    const { StreamingMarkdownRenderer } = await import("chat");
+    const renderer = new StreamingMarkdownRenderer();
+
+    let streamMsgId: string | undefined;
+    let index = 0;
+    let stopped = false;
+    let pendingSend: Promise<void> | null = null;
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+    let lastSentContent = "";
+    let chunkCount = 0;
+
+    const UPDATE_INTERVAL_MS = 500;
+    const context = this.passiveContextByThread.get(threadId);
+    this.logger.debug("QQ streamC2C passive context", { context: { msgId: context?.msgId, eventId: context?.eventId } });
+
+    const sendChunk = async (content: string, isFinal: boolean): Promise<QQStreamMessageResponse | null> => {
+      const payload: QQStreamMessageRequest = {
+        input_mode: "replace",
+        input_state: isFinal ? 10 : 1,
+        content_type: "markdown",
+        content_raw: content,
+        index,
+        ...(streamMsgId ? { stream_msg_id: streamMsgId } : {}),
+        ...(context?.msgId ? { msg_id: context.msgId } : {}),
+        ...(context?.eventId ? { event_id: context.eventId } : {}),
+      };
+
+      this.logger.debug("QQ stream_messages API call", { isFinal, index, contentLength: content.length, contentPreview: content.slice(0, 100) });
+
+      try {
+        const response = await this.apiRequest<QQStreamMessageResponse>(
+          `/v2/users/${encodeURIComponent(thread.userOpenId)}/stream_messages`,
+          {
+            body: JSON.stringify(payload),
+            method: "POST",
+          },
+        );
+        this.logger.debug("QQ stream_messages API response", { isFinal, index, responseId: response.id, response });
+        return response;
+      } catch (error) {
+        this.logger.warn("QQ stream message API call failed", { isFinal, index, error });
+        return null;
+      }
+    };
+
+    const doSendAndSchedule = async () => {
+      if (stopped) {
+        this.logger.debug("QQ stream doSendAndSchedule skipped: stopped");
+        return;
+      }
+
+      const content = renderer.render();
+      this.logger.debug("QQ stream doSendAndSchedule", { contentLength: content.length, contentPreview: content.slice(0, 100), lastSentContentLength: lastSentContent.length });
+
+      if (content !== lastSentContent && content.trim()) {
+        const response = await sendChunk(content, false);
+        if (response?.id) {
+          if (!streamMsgId) {
+            streamMsgId = response.id;
+            this.logger.debug("QQ stream streamMsgId established", { streamMsgId });
+          }
+          lastSentContent = content;
+          index++;
+        } else {
+          this.logger.debug("QQ stream sendChunk returned no id");
+        }
+      } else {
+        this.logger.debug("QQ stream doSendAndSchedule: content unchanged or empty");
+      }
+
+      if (!stopped) {
+        scheduleNext();
+      }
+    };
+
+    const scheduleNext = () => {
+      this.logger.debug("QQ stream scheduleNext", { intervalMs: UPDATE_INTERVAL_MS });
+      timerId = setTimeout(() => {
+        pendingSend = doSendAndSchedule();
+      }, UPDATE_INTERVAL_MS);
+    };
+
+    scheduleNext();
+
+    try {
+      for await (const chunk of textStream) {
+        chunkCount++;
+        const text = streamChunkToText(chunk);
+        this.logger.debug("QQ stream received chunk", { chunkCount, textLength: text.length, textPreview: text.slice(0, 50) });
+        renderer.push(text);
+      }
+    } finally {
+      this.logger.debug("QQ stream textStream ended", { chunkCount, stopped });
+      stopped = true;
+      if (timerId) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+    }
+
+    this.logger.debug("QQ stream after textStream", { pendingSend: !!pendingSend, streamMsgId });
+
+    if (pendingSend) {
+      this.logger.debug("QQ stream awaiting pendingSend");
+      await pendingSend;
+      this.logger.debug("QQ stream pendingSend completed", { streamMsgId });
+    }
+
+    const finalContent = renderer.finish();
+    this.logger.debug("QQ stream finalContent", { length: finalContent.length, preview: finalContent.slice(0, 100) });
+
+    // Stream never established: fallback to regular message.
+    if (!streamMsgId) {
+      this.logger.info("QQ stream never established, falling back to regular message", { chunkCount });
+      return this.postMessage(threadId, finalContent || " ");
+    }
+
+    // Send final message.
+    this.logger.debug("QQ stream sending final message", { streamMsgId, finalIndex: index });
+    const finalResponse = await sendChunk(finalContent, true);
+    if (!finalResponse?.id) {
+      this.logger.warn("QQ stream final message failed, falling back to regular message");
+      return this.postMessage(threadId, finalContent || " ");
+    }
+    this.logger.debug("QQ stream final message sent", { finalResponseId: finalResponse.id });
+
+    const enrichedRaw: QQRawMessage = {
+      ...finalResponse,
+      _chat_is_outbound: true,
+      _chat_thread_id: toThreadStorageId(thread),
+      _chat_thread_type: thread.type,
+      author: this.getOutboundAuthor(thread.type),
+      id: finalResponse.id ?? crypto.randomUUID(),
+      timestamp: finalResponse.timestamp ?? new Date().toISOString(),
+      content: finalContent,
+    };
+
+    const parsed = this.parseMessage(enrichedRaw);
+    this.cacheMessage(parsed);
+
+    return {
+      id: parsed.id,
+      raw: enrichedRaw,
+      threadId,
+    };
   }
 
   renderFormatted(content: FormattedContent): string {

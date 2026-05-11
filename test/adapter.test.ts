@@ -1254,7 +1254,66 @@ describe("QQAdapter outbound rich messages", () => {
     });
   });
 
-  it("streams by collecting chunks and posting once because QQ does not support editMessage", async () => {
+  it("streams C2C messages using QQ native stream_messages API", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/stream_messages") {
+        return Response.json({
+          id: "stream-msg-1",
+          timestamp: "2026-05-09T12:00:01+08:00",
+        });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    async function* chunks() {
+      yield "hello ";
+      // Allow the scheduled intermediate update to fire.
+      await new Promise((r) => setTimeout(r, 600));
+      yield {
+        text: "**world**",
+        type: "markdown_text" as const,
+      };
+    }
+
+    await adapter.stream("qq:c2c/user-openid", chunks());
+
+    // Token + intermediate + final stream_messages calls.
+    assert.ok(fetchMock.mock.callCount() >= 3);
+
+    const streamCalls = fetchMock.mock.calls.filter((call) =>
+      String(call.arguments[0]).includes("/stream_messages")
+    );
+    assert.ok(streamCalls.length >= 2);
+
+    // First intermediate call.
+    const firstBody = JSON.parse(String(streamCalls[0]?.arguments[1]?.body ?? ""));
+    assert.strictEqual(firstBody.input_mode, "replace");
+    assert.strictEqual(firstBody.input_state, 1);
+    assert.strictEqual(firstBody.content_type, "markdown");
+    assert.strictEqual(firstBody.index, 0);
+    assert.strictEqual(firstBody.stream_msg_id, undefined);
+
+    // Final call.
+    const lastBody = JSON.parse(String(streamCalls[streamCalls.length - 1]?.arguments[1]?.body ?? ""));
+    assert.strictEqual(lastBody.input_mode, "replace");
+    assert.strictEqual(lastBody.input_state, 10);
+    assert.strictEqual(lastBody.content_type, "markdown");
+    assert.strictEqual(lastBody.content_raw, "hello **world**");
+    assert.strictEqual(lastBody.stream_msg_id, "stream-msg-1");
+  });
+
+  it("falls back to regular message when stream_messages API fails in C2C", async () => {
     const adapter = createAdapter({
       tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
     });
@@ -1272,6 +1331,7 @@ describe("QQAdapter outbound rich messages", () => {
           timestamp: "2026-05-09T12:00:01+08:00",
         });
       }
+      // stream_messages returns 404 to simulate API failure.
       return Response.json({ code: 404 }, { status: 404 });
     });
     globalThis.fetch = fetchMock as typeof globalThis.fetch;
@@ -1289,6 +1349,42 @@ describe("QQAdapter outbound rich messages", () => {
     assert.strictEqual(fetchMock.mock.callCount(), 2);
     assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
       content: "hello **world**",
+      msg_type: 0,
+    });
+  });
+
+  it("falls back to regular message for group streams", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/groups/group-openid/messages") {
+        return Response.json({
+          id: "sent-message-1",
+          timestamp: "2026-05-09T12:00:01+08:00",
+        });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    async function* chunks() {
+      yield "hello ";
+      yield "group";
+    }
+
+    await adapter.stream("qq:group/group-openid", chunks());
+
+    assert.strictEqual(fetchMock.mock.callCount(), 2);
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
+      content: "hello group",
       msg_type: 0,
     });
   });

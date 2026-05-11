@@ -459,3 +459,37 @@ export interface QQGatewayBotResponse {
   shards?: number;
   url: string;
 }
+
+/** QQ stream message request body. */
+export interface QQStreamMessageRequest {
+  /** Update mode: always "replace". */
+  input_mode: "replace";
+  /** Stream state: 1=intermediate (generating), 10=final (done). */
+  input_state: 1 | 10;
+  /** Content format type. */
+  content_type: "markdown";
+  /** Current full message content (replace mode). */
+  content_raw: string;
+  /** Passive reply context event id. */
+  event_id?: string;
+  /** Passive reply context message id. */
+  msg_id?: string;
+  /** Passive reply sequence. */
+  msg_seq?: number;
+  /** Frame index in the stream, starting from 0. */
+  index: number;
+  /** Stream message ID returned from first call, required for subsequent calls. */
+  stream_msg_id?: string;
+}
+
+/** QQ stream message response body. */
+export interface QQStreamMessageResponse {
+  /** Stream message ID. */
+  id: string;
+  /** Response timestamp. */
+  timestamp?: string;
+  /** Extended info including ref_idx. */
+  ext_info?: { ref_idx: string };
+  /** Remaining message length. */
+  remain_msg_len?: number;
+}

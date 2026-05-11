@@ -220,17 +220,60 @@ testBot.onSlashCommand("/mention", async (event) => {
   );
 });
 
+testBot.onSlashCommand("/stream", async (event) => {
+  console.log("!!!!!!!!!! /stream command triggered", {
+    threadId: event.channel.id,
+    isDM: event.channel.isDM,
+  });
+
+  async function* simulateStream() {
+    const sentences = [
+      "这是",
+      "一条",
+      "模拟的",
+      "流式消息。",
+      "\n\n",
+      "它会",
+      "逐段",
+      "发送",
+      "到",
+      "QQ",
+      "客户端。",
+      "\n\n",
+      "你可以",
+      "看到",
+      "打字机",
+      "效果。",
+      "\n\n",
+      `时间: ${new Date().toISOString()}`,
+    ];
+    for (const sentence of sentences) {
+      yield sentence;
+      // 模拟 LLM 逐字输出的延迟
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+
+  console.log("!!!!!!!!!! /stream calling channel.post() with async iterable");
+  const result = await event.channel.post(simulateStream());
+  console.log("!!!!!!!!!! /stream channel.post() returned", { messageId: result.id });
+});
+
 testBot.onDirectMessage(async (thread, message) => {
+  console.log("!!!!!!!!!! onDirectMessage", { text: message.text, threadId: thread.id });
   if (qqDebugPayloads) {
     console.log("[qq:raw-message]", JSON.stringify(message.raw, null, 2));
   }
+
   await thread.post(`echo: ${message.text}`);
 });
 
 testBot.onSubscribedMessage(async (thread, message) => {
+  console.log("!!!!!!!!!! onSubscribedMessage", { text: message.text, threadId: thread.id });
   if (qqDebugPayloads) {
     console.log("[qq:raw-message]", JSON.stringify(message.raw, null, 2));
   }
+
   await thread.post(`echo: ${message.text}`);
 });
 
