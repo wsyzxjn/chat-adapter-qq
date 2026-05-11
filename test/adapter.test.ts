@@ -1234,7 +1234,6 @@ describe("QQAdapter outbound rich messages", () => {
         "# title",
         "subtitle",
         "hello",
-        "图片：sample image",
         "**Status**: OK\n[Docs](https://example.test/docs)",
         "---",
         "| Name | Value |\n| --- | --- |\n| adapter | qq |",

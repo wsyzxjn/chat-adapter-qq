@@ -1248,15 +1248,22 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       return;
     }
 
-    const context = this.passiveContextByThread.get(threadId) ?? { nextMsgSeq: 1 };
-    if (msgId && msgId !== context.msgId) {
-      context.msgId = msgId;
-      context.nextMsgSeq = 1;
+    const context = this.passiveContextByThread.get(threadId);
+    if (context) {
+      if (msgId && msgId !== context.msgId) {
+        context.msgId = msgId;
+        context.nextMsgSeq = 1;
+      }
+      if (eventId && eventId !== context.eventId) {
+        context.eventId = eventId;
+      }
+      return;
     }
-    if (eventId) {
-      context.eventId = eventId;
-    }
-    this.passiveContextByThread.set(threadId, context);
+
+    this.passiveContextByThread.set(threadId, {
+      ...(eventId ? { eventId } : {}),
+      ...(msgId ? { msgId, nextMsgSeq: 1 } : { nextMsgSeq: 1 }),
+    });
   }
 
   private cacheMessage(message: Message<QQRawMessage>): void {

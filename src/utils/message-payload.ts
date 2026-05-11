@@ -23,6 +23,20 @@ import type {
 import { assertNever } from "./assert.js";
 import { buildOutboundContent } from "./content.js";
 
+function toAttachmentType(contentType: string | undefined): Attachment["type"] {
+  if (contentType?.startsWith("image/")) {
+    return "image";
+  }
+  switch (contentType) {
+    case "voice":
+      return "audio";
+    case "video/mp4":
+      return "video";
+    default:
+      return "file";
+  }
+}
+
 export function toAttachments(
   attachments: QQMessageAttachment[] | undefined,
 ): Message<QQRawMessage>["attachments"] {
@@ -31,7 +45,7 @@ export function toAttachments(
   }
   return attachments.map((attachment) => {
     const output: Attachment = {
-      type: attachment.content_type?.startsWith("image/") ? "image" : "file",
+      type: toAttachmentType(attachment.content_type),
     };
     if (attachment.height !== undefined) {
       output.height = attachment.height;
@@ -45,8 +59,9 @@ export function toAttachments(
     if (attachment.size !== undefined) {
       output.size = attachment.size;
     }
-    if (attachment.url !== undefined) {
-      output.url = attachment.url;
+    const url = attachment.url ?? attachment.voice_wav_url;
+    if (url !== undefined) {
+      output.url = url;
     }
     if (attachment.width !== undefined) {
       output.width = attachment.width;
@@ -96,43 +111,29 @@ export function buildMessageContentPayload(
   };
 }
 
-export function getPostMessagePath(thread: QQThreadId): string {
+function getThreadBasePath(thread: QQThreadId): string {
   switch (thread.type) {
     case "group":
-      return `/v2/groups/${encodeURIComponent(thread.groupOpenId)}/messages`;
+      return `/v2/groups/${encodeURIComponent(thread.groupOpenId)}`;
     case "c2c":
-      return `/v2/users/${encodeURIComponent(thread.userOpenId)}/messages`;
+      return `/v2/users/${encodeURIComponent(thread.userOpenId)}`;
     case "guild_channel":
-      throw new NotImplementedError("Guild channel postMessage is not implemented yet.", "postMessage");
+      throw new NotImplementedError("Guild channel operations are not implemented yet.", thread.type);
     default:
       return assertNever(thread);
   }
+}
+
+export function getPostMessagePath(thread: QQThreadId): string {
+  return `${getThreadBasePath(thread)}/messages`;
 }
 
 export function getUploadMediaPath(thread: QQThreadId): string {
-  switch (thread.type) {
-    case "group":
-      return `/v2/groups/${encodeURIComponent(thread.groupOpenId)}/files`;
-    case "c2c":
-      return `/v2/users/${encodeURIComponent(thread.userOpenId)}/files`;
-    case "guild_channel":
-      throw new NotImplementedError("Guild channel media upload is not implemented yet.", "files");
-    default:
-      return assertNever(thread);
-  }
+  return `${getThreadBasePath(thread)}/files`;
 }
 
 export function getDeleteMessagePath(thread: QQThreadId, messageId: string): string {
-  switch (thread.type) {
-    case "group":
-      return `/v2/groups/${encodeURIComponent(thread.groupOpenId)}/messages/${encodeURIComponent(messageId)}`;
-    case "c2c":
-      return `/v2/users/${encodeURIComponent(thread.userOpenId)}/messages/${encodeURIComponent(messageId)}`;
-    case "guild_channel":
-      throw new NotImplementedError("Guild channel deleteMessage is not implemented yet.", "deleteMessage");
-    default:
-      return assertNever(thread);
-  }
+  return `${getThreadBasePath(thread)}/messages/${encodeURIComponent(messageId)}`;
 }
 
 export function streamChunkToText(chunk: string | StreamChunk): string {
@@ -261,18 +262,14 @@ function extractCardImageAttachments(card: CardElement): Attachment[] {
 function toImageAttachment(url: string, name?: string): Attachment {
   const dataUrl = parseDataUrl(url);
   if (dataUrl) {
-    return {
-      data: dataUrl.data,
-      ...(dataUrl.mimeType ? { mimeType: dataUrl.mimeType } : {}),
-      ...(name !== undefined ? { name } : {}),
-      type: "image",
-    };
+    const attachment: Attachment = { data: dataUrl.data, type: "image" };
+    if (dataUrl.mimeType) attachment.mimeType = dataUrl.mimeType;
+    if (name !== undefined) attachment.name = name;
+    return attachment;
   }
-  return {
-    ...(name !== undefined ? { name } : {}),
-    type: "image",
-    url,
-  };
+  const attachment: Attachment = { type: "image", url };
+  if (name !== undefined) attachment.name = name;
+  return attachment;
 }
 
 function parseDataUrl(url: string): { data: Buffer; mimeType?: string } | null {

@@ -336,8 +336,17 @@ async function postArkTest(thread: QQTestTarget): Promise<void> {
   });
 }
 
+let _testImageBuffer: Buffer | undefined;
+
+async function getTestImageBuffer(): Promise<Buffer> {
+  if (!_testImageBuffer) {
+    _testImageBuffer = await readFile(qqTestImagePath);
+  }
+  return _testImageBuffer;
+}
+
 async function readTestImageAttachment(): Promise<Attachment> {
-  const data = await readFile(qqTestImagePath);
+  const data = await getTestImageBuffer();
   return {
     data,
     mimeType: "image/jpeg",
@@ -347,6 +356,6 @@ async function readTestImageAttachment(): Promise<Attachment> {
 }
 
 async function readTestImageDataUrl(): Promise<string> {
-  const data = await readFile(qqTestImagePath);
+  const data = await getTestImageBuffer();
   return `data:image/jpeg;base64,${data.toString("base64")}`;
 }

@@ -176,6 +176,10 @@ export interface QQMessageAttachment {
   size?: number;
   /** Download URL. */
   url?: string;
+  /** Voice file URL in WAV format (voice only). */
+  voice_wav_url?: string;
+  /** Voice ASR reference text (voice only). */
+  asr_refer_text?: string;
   /** Media width for image-like attachment. */
   width?: number;
 }
