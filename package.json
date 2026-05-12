@@ -1,6 +1,6 @@
 {
   "name": "@amatsuka/chat-adapter-qq",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "QQ adapter for chat",
   "type": "module",
   "main": "./dist/index.js",
