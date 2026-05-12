@@ -45,6 +45,7 @@ import type {
   QQArkPayload,
   QQGatewayBotResponse,
   QQIncomingMessage,
+  QQInputNotifyPayload,
   QQInteractionPayload,
   QQMessageEventType,
   QQMessageEventDataMap,
@@ -534,8 +535,38 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     throw new NotImplementedError(`QQ reaction removal is not implemented for scene: ${thread.type}.`, "removeReaction");
   }
 
-  async startTyping(_threadId: string, _status?: string): Promise<void> {
-    return;
+  async startTyping(threadId: string, _status?: string): Promise<void> {
+    const thread = this.decodeThreadId(threadId);
+    if (thread.type !== "c2c") {
+      this.logger.debug("QQ startTyping: not supported for non-c2c scenes", { threadType: thread.type });
+      return;
+    }
+
+    const context = this.passiveContextByThread.get(threadId);
+    const payload: QQSendMessageRequest = {
+      input_notify: {
+        input_second: 60,
+        input_type: 1,
+      },
+      msg_type: 6,
+      ...(context?.msgId ? { msg_id: context.msgId, msg_seq: context.nextMsgSeq } : {}),
+      ...(context?.eventId ? { event_id: context.eventId } : {}),
+    };
+
+    // Advance msg_seq if used.
+    if (context?.msgId) {
+      context.nextMsgSeq += 1;
+    }
+
+    try {
+      await this.apiRequest(`/v2/users/${encodeURIComponent(thread.userOpenId)}/messages`, {
+        body: JSON.stringify(payload),
+        method: "POST",
+      });
+      this.logger.debug("QQ startTyping sent", { threadId, userOpenId: thread.userOpenId });
+    } catch (error) {
+      this.logger.warn("QQ startTyping failed", { error, threadId });
+    }
   }
 
   async stream(
@@ -577,6 +608,10 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     textStream: AsyncIterable<string | StreamChunk>,
   ): Promise<RawMessage<QQRawMessage>> {
     this.logger.debug("QQ streamC2C started", { threadId, userOpenId: thread.userOpenId });
+
+    // Notify QQ client that bot is typing.
+    await this.startTyping(threadId);
+
     const { StreamingMarkdownRenderer } = await import("chat");
     const renderer = new StreamingMarkdownRenderer();
 

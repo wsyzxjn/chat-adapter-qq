@@ -419,6 +419,12 @@ export interface QQSentMessage extends QQBaseMessage {
 /** Raw QQ message union used by adapter parse/send methods. */
 export type QQRawMessage = QQIncomingMessage | QQSentMessage;
 
+/** QQ input notify payload for msg_type=6. */
+export interface QQInputNotifyPayload {
+  input_type: 1;
+  input_second: number;
+}
+
 /** QQ OpenAPI send-message request body. */
 export interface QQSendMessageRequest {
   /** QQ Ark message payload. */
@@ -427,6 +433,8 @@ export interface QQSendMessageRequest {
   content?: string;
   /** Passive reply context field. */
   event_id?: string;
+  /** QQ input status notification payload. */
+  input_notify?: QQInputNotifyPayload;
   /** QQ interactive keyboard payload. */
   keyboard?: QQKeyboardPayload;
   /** QQ markdown message payload. */
@@ -437,7 +445,7 @@ export interface QQSendMessageRequest {
   msg_id?: string;
   /** Passive reply sequence in the same msg_id context. */
   msg_seq?: number;
-  /** QQ msg type: 0=text. */
+  /** QQ msg type: 0=text, 6=input_notify. */
   msg_type: number;
 }
 

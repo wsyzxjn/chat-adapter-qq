@@ -1346,8 +1346,16 @@ describe("QQAdapter outbound rich messages", () => {
 
     await adapter.stream("qq:c2c/user-openid", chunks());
 
-    assert.strictEqual(fetchMock.mock.callCount(), 2);
+    // Token + startTyping + fallback message.
+    assert.strictEqual(fetchMock.mock.callCount(), 3);
     assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
+      input_notify: {
+        input_second: 60,
+        input_type: 1,
+      },
+      msg_type: 6,
+    });
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[2]?.arguments[1]?.body ?? "")), {
       content: "hello **world**",
       msg_type: 0,
     });
@@ -1387,6 +1395,113 @@ describe("QQAdapter outbound rich messages", () => {
       content: "hello group",
       msg_type: 0,
     });
+  });
+
+  it("sends C2C typing indicator via input_notify", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        return Response.json({ id: "typing-ack", timestamp: "2026-05-09T12:00:01+08:00" });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.startTyping("qq:c2c/user-openid");
+
+    assert.strictEqual(fetchMock.mock.callCount(), 2);
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? ""));
+    assert.strictEqual(body.msg_type, 6);
+    assert.deepStrictEqual(body.input_notify, {
+      input_second: 60,
+      input_type: 1,
+    });
+  });
+
+  it("sends C2C typing indicator with passive context msg_id and msg_seq", async () => {
+    const adapter = createAdapter({
+      requireAppIdHeader: false,
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        return Response.json({ id: "typing-ack", timestamp: "2026-05-09T12:00:01+08:00" });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await initializeWithProcessSpy(adapter);
+
+    // Simulate a previous message establishing passive context.
+    await adapter.handleWebhook(
+      new Request("https://example.test/webhooks/qq", {
+        body: JSON.stringify({
+          d: {
+            author: { user_openid: "user-openid" },
+            content: "hello",
+            id: "msg-1",
+            msg_id: "msg-id-1",
+            timestamp: "2026-05-09T12:00:00+08:00",
+          },
+          id: "event-envelope-id",
+          op: 0,
+          s: 10,
+          t: "C2C_MESSAGE_CREATE",
+        }),
+        method: "POST",
+      }),
+    );
+
+    await adapter.startTyping("qq:c2c/user-openid");
+
+    const typingBody = JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? ""));
+    assert.strictEqual(typingBody.msg_type, 6);
+    assert.strictEqual(typingBody.msg_id, "msg-id-1");
+    assert.strictEqual(typingBody.msg_seq, 1);
+
+    // Next message should use msg_seq=2 after startTyping consumed msg_seq=1.
+    await adapter.postMessage("qq:c2c/user-openid", "hello");
+    const messageBody = JSON.parse(String(fetchMock.mock.calls[2]?.arguments[1]?.body ?? ""));
+    assert.strictEqual(messageBody.msg_seq, 2);
+  });
+
+  it("does nothing for group typing indicator", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.startTyping("qq:group/group-openid");
+
+    // Group typing is a no-op; no API call is made.
+    assert.strictEqual(fetchMock.mock.callCount(), 0);
   });
 });
 
