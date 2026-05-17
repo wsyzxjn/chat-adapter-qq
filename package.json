@@ -3,22 +3,16 @@
   "version": "0.1.10",
   "description": "QQ adapter for chat",
   "type": "module",
-  "main": "./dist/index.js",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+    ".": "./dist/index.mjs",
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup",
-    "build:production": "NODE_ENV=production tsup",
-    "dev": "tsup --watch",
+    "build": "tsdown",
+    "build:production": "NODE_ENV=production tsdown --sourcemap false",
     "pretest": "pnpm run build",
     "test": "node --test test/*.test.*",
     "pretest:bot": "pnpm run build",
@@ -26,8 +20,7 @@
     "test:watch": "node --test --watch test/*.test.*",
     "test:bot": "node --env-file=.env.local --experimental-strip-types test/server.mjs",
     "test:bot:ws": "QQ_MODE=ws node --env-file=.env.ws.local --experimental-strip-types test/server.mjs",
-    "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
-    "clean": "rm -rf dist"
+    "typecheck": "tsc && tsc -p test/tsconfig.json"
   },
   "peerDependencies": {
     "chat": "^4.28.1"
@@ -35,8 +28,8 @@
   "devDependencies": {
     "@chat-adapter/state-memory": "^4.28.1",
     "@types/node": "^25.6.2",
-    "tsup": "^8.5.1",
-    "typescript": "^5.9.3"
+    "tsdown": "^0.22.0",
+    "typescript": "^6.0.3"
   },
   "repository": {
     "type": "git",

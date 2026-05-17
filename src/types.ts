@@ -27,7 +27,10 @@ export interface QQGuildChannelThreadId {
 }
 
 /** Discriminated union for supported QQ thread scenes. */
-export type QQThreadId = QQC2CThreadId | QQGroupThreadId | QQGuildChannelThreadId;
+export type QQThreadId =
+  | QQC2CThreadId
+  | QQGroupThreadId
+  | QQGuildChannelThreadId;
 
 /** Convenience union of QQ scene type literals. */
 export type QQThreadType = QQThreadId["type"];
@@ -38,14 +41,22 @@ export type QQAdapterMode = "socket" | "webhook";
 export type QQSocketModeMessageData = ArrayBuffer | string;
 
 export interface QQSocketModeWebSocket {
-  addEventListener(type: "message", listener: (event: MessageEvent<QQSocketModeMessageData>) => void): void;
+  addEventListener(
+    type: "message",
+    listener: (event: MessageEvent<QQSocketModeMessageData>) => void,
+  ): void;
   addEventListener(type: "close", listener: (event: CloseEvent) => void): void;
-  addEventListener(type: "error" | "open", listener: (event: Event) => void): void;
+  addEventListener(
+    type: "error" | "open",
+    listener: (event: Event) => void,
+  ): void;
   close(code?: number, reason?: string): void;
   send(data: string): void;
 }
 
-export type QQSocketModeWebSocketFactory = (url: string) => QQSocketModeWebSocket;
+export type QQSocketModeWebSocketFactory = (
+  url: string,
+) => QQSocketModeWebSocket;
 
 export interface QQSocketModeOptions {
   /** Gateway identify properties. Defaults to this package name. */
@@ -113,10 +124,15 @@ export interface QQSocketModeAdapterConfig extends QQAdapterBaseConfig {
 }
 
 /** QQ adapter runtime configuration. */
-export type QQAdapterConfig = QQSocketModeAdapterConfig | QQWebhookAdapterConfig;
+export type QQAdapterConfig =
+  | QQSocketModeAdapterConfig
+  | QQWebhookAdapterConfig;
 
 /** Generic QQ webhook/gateway envelope. */
-export interface QQWebhookPayload<TData = unknown, TType extends string = string> {
+export interface QQWebhookPayload<
+  TData = unknown,
+  TType extends string = string,
+> {
   /** Event data payload. */
   d?: TData;
   /** Callback event id. */
@@ -130,7 +146,9 @@ export interface QQWebhookPayload<TData = unknown, TType extends string = string
 }
 
 /** QQ dispatch event types treated as inbound messages by Chat SDK. */
-export type QQMessageEventType = "C2C_MESSAGE_CREATE" | "GROUP_AT_MESSAGE_CREATE";
+export type QQMessageEventType =
+  | "C2C_MESSAGE_CREATE"
+  | "GROUP_AT_MESSAGE_CREATE";
 
 /** QQ dispatch event types treated as Chat SDK actions. */
 export type QQActionEventType = "INTERACTION_CREATE";
@@ -397,7 +415,9 @@ export type QQKnownDispatchEventType =
   | QQMessageEventType
   | QQPlatformEventType;
 
-export interface QQPlatformEvent<TType extends QQPlatformEventType = QQPlatformEventType> {
+export interface QQPlatformEvent<
+  TType extends QQPlatformEventType = QQPlatformEventType,
+> {
   data: QQPlatformEventDataMap[TType] | undefined;
   eventId: string;
   payload: QQWebhookPayload<QQPlatformEventDataMap[TType], TType>;
@@ -405,16 +425,15 @@ export interface QQPlatformEvent<TType extends QQPlatformEventType = QQPlatformE
   type: TType;
 }
 
-export type QQPlatformEventHandler<TType extends QQPlatformEventType = QQPlatformEventType> = (
-  event: QQPlatformEvent<TType>,
-) => Promise<void> | void;
+export type QQPlatformEventHandler<
+  TType extends QQPlatformEventType = QQPlatformEventType,
+> = (event: QQPlatformEvent<TType>) => Promise<void> | void;
 
 /** Inbound message payload from webhook/OpenAPI. */
 export interface QQIncomingMessage extends QQBaseMessage {}
 
 /** Outbound/sent message payload from OpenAPI. */
-export interface QQSentMessage extends QQBaseMessage {
-}
+export interface QQSentMessage extends QQBaseMessage {}
 
 /** Raw QQ message union used by adapter parse/send methods. */
 export type QQRawMessage = QQIncomingMessage | QQSentMessage;

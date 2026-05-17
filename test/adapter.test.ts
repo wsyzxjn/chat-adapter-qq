@@ -793,6 +793,51 @@ describe("QQAdapter outbound rich messages", () => {
     });
   });
 
+  it("adds QQ markdown image dimensions to external markdown images", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        return Response.json({
+          id: "sent-message-1",
+          timestamp: "2026-05-09T12:00:01+08:00",
+        });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.postMessage("qq:c2c/user-openid", {
+      markdown: "![sample](https://example.test/image.png)",
+    });
+
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
+      markdown: {
+        content: "![sample #208px #320px](https://example.test/image.png)",
+      },
+      msg_type: 2,
+    });
+  });
+
+  it("rejects non-external markdown images", async () => {
+    const adapter = createAdapter();
+
+    await assert.rejects(
+      adapter.postMessage("qq:c2c/user-openid", {
+        markdown: "![sample](data:image/png;base64,aW1hZ2U=)",
+      }),
+      /QQ markdown images require external HTTP\(S\) URLs/,
+    );
+  });
+
   it("sends URL image attachments through QQ media flow", async () => {
     const adapter = createAdapter({
       tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
@@ -1162,12 +1207,10 @@ describe("QQAdapter outbound rich messages", () => {
     );
   });
 
-  it("maps Chat SDK JSX card images and content to QQ media and markdown", async () => {
+  it("maps Chat SDK JSX URL card images and content to QQ markdown", async () => {
     const adapter = createAdapter({
       tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
     });
-    let uploadCount = 0;
-    let messageCount = 0;
     const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input);
       if (url === "https://tokens.example.test/app/getAppAccessToken") {
@@ -1176,17 +1219,9 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/files") {
-        uploadCount += 1;
-        return Response.json({
-          file_info: `media-file-info-${uploadCount}`,
-          ttl: 3600,
-        });
-      }
       if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
-        messageCount += 1;
         return Response.json({
-          id: `sent-message-${messageCount}`,
+          id: "sent-message-1",
           timestamp: "2026-05-09T12:00:01+08:00",
         });
       }
@@ -1225,29 +1260,73 @@ describe("QQAdapter outbound rich messages", () => {
     );
 
     assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
+      markdown: {
+        content: [
+          "# title",
+          "subtitle",
+          "![img #618px #249px](https://example.test/header.png)",
+          "hello",
+          "![sample image #208px #320px](https://example.test/image.png)",
+          "**Status**: OK\n[Docs](https://example.test/docs)",
+          "---",
+          "| Name | Value |\n| --- | --- |\n| adapter | qq |",
+        ].join("\n\n"),
+      },
+      msg_type: 2,
+    });
+  });
+
+  it("keeps data URL JSX card images on QQ media flow", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 7200,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/files") {
+        return Response.json({
+          file_info: "media-file-info",
+          ttl: 3600,
+        });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        return Response.json({
+          id: "sent-message-1",
+          timestamp: "2026-05-09T12:00:01+08:00",
+        });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.postMessage(
+      "qq:c2c/user-openid",
+      Card({
+        children: [
+          CardText("hello"),
+          Image({
+            alt: "sample image",
+            url: "data:image/png;base64,aW1hZ2UtYnl0ZXM=",
+          }),
+        ],
+        title: "title",
+      }),
+    );
+
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
+      file_data: Buffer.from("image-bytes").toString("base64"),
       file_type: 1,
       srv_send_msg: false,
-      url: "https://example.test/header.png",
     });
-    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[3]?.arguments[1]?.body ?? "")), {
-      content: [
-        "# title",
-        "subtitle",
-        "hello",
-        "**Status**: OK\n[Docs](https://example.test/docs)",
-        "---",
-        "| Name | Value |\n| --- | --- |\n| adapter | qq |",
-      ].join("\n\n"),
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[2]?.arguments[1]?.body ?? "")), {
+      content: "# title\n\nhello",
       media: {
-        file_info: "media-file-info-1",
-        ttl: 3600,
-      },
-      msg_type: 7,
-    });
-    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[4]?.arguments[1]?.body ?? "")), {
-      content: " ",
-      media: {
-        file_info: "media-file-info-2",
+        file_info: "media-file-info",
         ttl: 3600,
       },
       msg_type: 7,
@@ -1661,7 +1740,7 @@ describe("QQAdapter socket mode", () => {
           properties: {
             "$browser": "@amatsuka/chat-adapter-qq",
             "$device": "@amatsuka/chat-adapter-qq",
-            "$os": process.platform,
+            "$os": "web",
           },
           shard: [0, 1],
           token: "QQBot access-token",

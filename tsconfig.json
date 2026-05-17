@@ -1,20 +1,13 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "esModuleInterop": true,
+    "target": "ES2022",
     "strict": true,
     "skipLibCheck": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "resolveJsonModule": true,
     "isolatedModules": true,
-    "exactOptionalPropertyTypes": true,
-    "noUncheckedIndexedAccess": true,
     "verbatimModuleSyntax": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["node"]
-  }
+    "noEmit": true
+  },
+  "include": ["src", "tsdown.config.ts"]
 }

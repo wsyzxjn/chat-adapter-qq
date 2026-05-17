@@ -38,6 +38,39 @@ export function bytesToHex(bytes: Uint8Array): string {
   return hex;
 }
 
+/** Convert base64 text to bytes without depending on Node Buffer. */
+export function base64ToBytes(base64: string): Uint8Array {
+  const normalized = base64.replace(/\s/g, "");
+  const binary = atob(normalized);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+/** Copy bytes into a plain ArrayBuffer for Web APIs that reject SharedArrayBuffer. */
+export function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
+
+/** Convert bytes to base64 without depending on Node Buffer. */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]!);
+  }
+  return btoa(binary);
+}
+
+/** Return the SHA-256 digest of bytes as hex using Web Crypto. */
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytesToArrayBuffer(bytes));
+  return bytesToHex(new Uint8Array(digest));
+}
+
 /** Concatenate two Uint8Arrays. */
 export function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
   const result = new Uint8Array(a.length + b.length);

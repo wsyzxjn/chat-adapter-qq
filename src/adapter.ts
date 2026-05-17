@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type {
   Adapter,
   AdapterPostableMessage,
@@ -90,6 +89,7 @@ import {
 } from "./utils/thread-id.js";
 import {
   assertNever,
+  bytesToBase64,
   bytesToHex,
   concatBytes,
   createBotSeed,
@@ -97,6 +97,7 @@ import {
   isValidationPayload,
   parseCursor,
   parseQQTimestamp,
+  sha256Hex,
   stringToBytes,
   toChatError,
 } from "./utils/index.js";
@@ -1391,8 +1392,8 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       cacheSource = `url:${attachment.url}`;
     } else {
       const data = await this.readAttachmentData(attachment);
-      request.file_data = data.toString("base64");
-      cacheSource = `data:${createHash("sha256").update(data).digest("hex")}`;
+      request.file_data = bytesToBase64(data);
+      cacheSource = `data:${await sha256Hex(data)}`;
     }
 
     const cacheKey = `${thread.type}:${fileType}:${cacheSource}`;
@@ -1440,15 +1441,18 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     });
   }
 
-  private async readAttachmentData(attachment: Attachment): Promise<Buffer> {
+  private async readAttachmentData(attachment: Attachment): Promise<Uint8Array> {
     const data = attachment.data ?? await attachment.fetchData?.();
     if (!data) {
       throw new NotImplementedError("QQ media messages require URL-based or binary attachment data.", "attachments");
     }
     if (data instanceof Blob) {
-      return Buffer.from(await data.arrayBuffer());
+      return new Uint8Array(await data.arrayBuffer());
     }
-    return Buffer.from(data);
+    if (ArrayBuffer.isView(data)) {
+      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    }
+    throw new NotImplementedError("QQ media messages require Blob or binary attachment data.", "attachments");
   }
 
   private updatePassiveContext(threadId: string, raw: QQRawMessage): void {

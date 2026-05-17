@@ -256,11 +256,16 @@ testBot.onSlashCommand("/stream", async (event) => {
 
   console.log("!!!!!!!!!! /stream calling channel.post() with async iterable");
   const result = await event.channel.post(simulateStream());
-  console.log("!!!!!!!!!! /stream channel.post() returned", { messageId: result.id });
+  console.log("!!!!!!!!!! /stream channel.post() returned", {
+    messageId: result.id,
+  });
 });
 
 testBot.onDirectMessage(async (thread, message) => {
-  console.log("!!!!!!!!!! onDirectMessage", { text: message.text, threadId: thread.id });
+  console.log("!!!!!!!!!! onDirectMessage", {
+    text: message.text,
+    threadId: thread.id,
+  });
   if (qqDebugPayloads) {
     console.log("[qq:raw-message]", JSON.stringify(message.raw, null, 2));
   }
@@ -269,7 +274,10 @@ testBot.onDirectMessage(async (thread, message) => {
 });
 
 testBot.onSubscribedMessage(async (thread, message) => {
-  console.log("!!!!!!!!!! onSubscribedMessage", { text: message.text, threadId: thread.id });
+  console.log("!!!!!!!!!! onSubscribedMessage", {
+    text: message.text,
+    threadId: thread.id,
+  });
   if (qqDebugPayloads) {
     console.log("[qq:raw-message]", JSON.stringify(message.raw, null, 2));
   }

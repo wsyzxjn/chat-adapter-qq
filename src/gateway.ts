@@ -231,7 +231,7 @@ export class QQGatewayClient {
         properties: this.options.properties ?? {
           "$browser": "@amatsuka/chat-adapter-qq",
           "$device": "@amatsuka/chat-adapter-qq",
-          "$os": process.platform,
+          "$os": "web",
         },
         shard: this.options.shard ?? [0, 1],
         token,

@@ -10,7 +10,7 @@ import type {
   PostableRaw,
   StreamChunk,
 } from "chat";
-import { ChatError, NotImplementedError, isCardElement } from "chat";
+import { ChatError, NotImplementedError, isCardElement, parseMarkdown, stringifyMarkdown, walkAst } from "chat";
 import { QQFormatConverter } from "../format-converter.js";
 import type {
   QQKeyboardButton,
@@ -22,6 +22,19 @@ import type {
 } from "../types.js";
 import { assertNever } from "./assert.js";
 import { buildOutboundContent } from "./content.js";
+import { base64ToBytes, bytesToArrayBuffer, stringToBytes } from "./crypto.js";
+
+const QQ_MARKDOWN_IMAGE_DEFAULT_HEIGHT = 320;
+const QQ_MARKDOWN_IMAGE_DEFAULT_WIDTH = 208;
+const QQ_MARKDOWN_HEADER_IMAGE_DEFAULT_HEIGHT = 249;
+const QQ_MARKDOWN_HEADER_IMAGE_DEFAULT_WIDTH = 618;
+
+interface MarkdownImageSource {
+  alt?: string;
+  height?: number;
+  url: string;
+  width?: number;
+}
 
 function toAttachmentType(contentType: string | undefined): Attachment["type"] {
   if (contentType?.startsWith("image/")) {
@@ -84,7 +97,7 @@ export function buildMessageContentPayload(
   if (isPostableMarkdown(message) || isPostableAst(message)) {
     return {
       markdown: {
-        content: buildOutboundContent(converter, message),
+        content: normalizeQQMarkdownContent(buildOutboundContent(converter, message)),
       },
       msg_type: 2,
     };
@@ -94,7 +107,7 @@ export function buildMessageContentPayload(
   if (card) {
     const payload: QQSendMessageRequest = {
       markdown: {
-        content: renderCardMarkdown(card),
+        content: normalizeQQMarkdownContent(renderCardMarkdown(card)),
       },
       msg_type: 2,
     };
@@ -191,7 +204,7 @@ export function getPostableAttachments(message: AdapterPostableMessage): Attachm
   }
   const attachments = "attachments" in message && Array.isArray(message.attachments) ? message.attachments : [];
   const card = extractCard(message);
-  return card ? [...attachments, ...extractCardImageAttachments(card)] : attachments;
+  return card ? [...attachments, ...extractCardMediaAttachments(card)] : attachments;
 }
 
 export function toQQMediaFileType(thread: QQThreadId, attachment: Attachment): number {
@@ -238,16 +251,18 @@ function extractCard(message: AdapterPostableMessage): CardElement | null {
   return null;
 }
 
-function extractCardImageAttachments(card: CardElement): Attachment[] {
+function extractCardMediaAttachments(card: CardElement): Attachment[] {
   const attachments: Attachment[] = [];
-  if (card.imageUrl) {
+  if (card.imageUrl && !canRenderMarkdownImage(card.imageUrl)) {
     attachments.push(toImageAttachment(card.imageUrl));
   }
 
   const visit = (children: readonly CardChild[]): void => {
     for (const child of children) {
       if (child.type === "image") {
-        attachments.push(toImageAttachment(child.url, child.alt));
+        if (!canRenderMarkdownImage(child.url)) {
+          attachments.push(toImageAttachment(child.url, child.alt));
+        }
         continue;
       }
       if (child.type === "section") {
@@ -262,7 +277,13 @@ function extractCardImageAttachments(card: CardElement): Attachment[] {
 function toImageAttachment(url: string, name?: string): Attachment {
   const dataUrl = parseDataUrl(url);
   if (dataUrl) {
-    const attachment: Attachment = { data: dataUrl.data, type: "image" };
+    const attachment: Attachment = {
+      data: new Blob(
+        [bytesToArrayBuffer(dataUrl.data)],
+        dataUrl.mimeType ? { type: dataUrl.mimeType } : undefined,
+      ),
+      type: "image",
+    };
     if (dataUrl.mimeType) attachment.mimeType = dataUrl.mimeType;
     if (name !== undefined) attachment.name = name;
     return attachment;
@@ -272,7 +293,7 @@ function toImageAttachment(url: string, name?: string): Attachment {
   return attachment;
 }
 
-function parseDataUrl(url: string): { data: Buffer; mimeType?: string } | null {
+function parseDataUrl(url: string): { data: Uint8Array; mimeType?: string } | null {
   const match = /^data:([^;,]+)?(;base64)?,(.*)$/i.exec(url);
   if (!match) {
     return null;
@@ -282,7 +303,7 @@ function parseDataUrl(url: string): { data: Buffer; mimeType?: string } | null {
     return null;
   }
   return {
-    data: base64Flag ? Buffer.from(value, "base64") : Buffer.from(decodeURIComponent(value)),
+    data: base64Flag ? base64ToBytes(value) : stringToBytes(decodeURIComponent(value)),
     ...(mimeType ? { mimeType } : {}),
   };
 }
@@ -291,6 +312,11 @@ function renderCardMarkdown(card: CardElement): string {
   const lines = [
     card.title ? `# ${card.title}` : null,
     card.subtitle ?? null,
+    card.imageUrl ? renderQQMarkdownImage({
+      url: card.imageUrl,
+      height: QQ_MARKDOWN_HEADER_IMAGE_DEFAULT_HEIGHT,
+      width: QQ_MARKDOWN_HEADER_IMAGE_DEFAULT_WIDTH,
+    }) : null,
     ...card.children.map(renderCardChildMarkdown),
   ].filter((line): line is string => Boolean(line?.trim()));
   return lines.length > 0 ? lines.join("\n\n") : " ";
@@ -305,7 +331,7 @@ function renderCardChildMarkdown(child: CardChild): string | null {
     case "fields":
       return child.children.map((field) => `**${field.label}**: ${field.value}`).join("\n");
     case "image":
-      return null;
+      return renderQQMarkdownImage(child);
     case "link":
       return `[${child.label}](${child.url})`;
     case "section":
@@ -335,6 +361,77 @@ function renderTextElement(content: string, style: "bold" | "muted" | "plain" | 
     return `**${content}**`;
   }
   return content;
+}
+
+function renderQQMarkdownImage(image: MarkdownImageSource): string | null {
+  if (!canRenderMarkdownImage(image.url)) {
+    return null;
+  }
+
+  const width = toPositiveInteger(image.width) ?? QQ_MARKDOWN_IMAGE_DEFAULT_WIDTH;
+  const height = toPositiveInteger(image.height) ?? QQ_MARKDOWN_IMAGE_DEFAULT_HEIGHT;
+  const alt = toQQMarkdownImageAlt(image.alt, width, height);
+  return `![${alt}](${image.url})`;
+}
+
+function normalizeQQMarkdownContent(content: string): string {
+  const ast = parseMarkdown(content);
+  let changed = false;
+
+  walkAst(ast, (node) => {
+    if (node.type !== "image") {
+      return node;
+    }
+
+    const image = node as typeof node & { alt?: string | null; url?: string };
+    if (typeof image.url !== "string" || !canRenderMarkdownImage(image.url)) {
+      throw new NotImplementedError("QQ markdown images require external HTTP(S) URLs.", "markdown");
+    }
+    if (!hasQQMarkdownImageSize(image.alt ?? "")) {
+      image.alt = toQQMarkdownImageAlt(image.alt ?? undefined);
+      changed = true;
+    }
+    return image;
+  });
+
+  return changed ? stringifyMarkdown(ast).trim() || " " : content;
+}
+
+function canRenderMarkdownImage(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeMarkdownImageAlt(alt: string): string {
+  const sanitized = alt.replace(/[\r\n[\]]+/g, " ").trim();
+  return sanitized || "img";
+}
+
+function toQQMarkdownImageAlt(
+  alt: string | null | undefined,
+  width = QQ_MARKDOWN_IMAGE_DEFAULT_WIDTH,
+  height = QQ_MARKDOWN_IMAGE_DEFAULT_HEIGHT,
+): string {
+  const sanitized = sanitizeMarkdownImageAlt(alt ?? "img");
+  if (hasQQMarkdownImageSize(sanitized)) {
+    return sanitized;
+  }
+  return `${sanitized} #${width}px #${height}px`;
+}
+
+function hasQQMarkdownImageSize(alt: string): boolean {
+  return /#\d+px\s+#\d+px(?:\s|$)/i.test(alt);
+}
+
+function toPositiveInteger(value: number | undefined): number | null {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.round(value);
 }
 
 function cardToKeyboard(card: CardElement): QQKeyboardPayload | null {
