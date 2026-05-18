@@ -15,11 +15,11 @@
     "build:production": "NODE_ENV=production tsdown --sourcemap false",
     "pretest": "pnpm run build",
     "test": "node --test test/*.test.*",
-    "pretest:bot": "pnpm run build",
     "test:coverage": "node --test --test-coverage test/*.test.*",
     "test:watch": "node --test --watch test/*.test.*",
-    "test:bot": "node --env-file=.env.local --experimental-strip-types test/server.mjs",
-    "test:bot:ws": "QQ_MODE=ws node --env-file=.env.ws.local --experimental-strip-types test/server.mjs",
+    "test:bot": "pnpm run build && node --env-file=.env.local --experimental-strip-types test/server.mjs",
+    "test:bot:ws": "pnpm run build && QQ_MODE=ws node --env-file=.env.ws.local --experimental-strip-types test/server.mjs",
+    "test:c2c-proactive": "pnpm run build && node --env-file=.env.local --experimental-strip-types test/c2c-proactive.ts",
     "typecheck": "tsc && tsc -p test/tsconfig.json"
   },
   "peerDependencies": {

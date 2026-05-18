@@ -133,6 +133,12 @@ testBot.onSlashCommand("/ping", async (event) => {
   await event.channel.post(`pong ${new Date().toISOString()}`);
 });
 
+testBot.onSlashCommand("/id", async (event) => {
+  await event.channel.post(
+    `threadId: ${event.channel.id}, userId: ${event.user.userId}`,
+  );
+});
+
 testBot.onSlashCommand("/md", async (event) => {
   await event.channel.post({
     markdown: [
