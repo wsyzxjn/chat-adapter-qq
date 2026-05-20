@@ -12,6 +12,7 @@ import type { Attachment, Channel, Thread } from "chat";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import {
   createQQAdapter,
+  isQQMentioned,
   type QQAdapterBaseConfig,
   type QQSocketModeOptions,
 } from "@amatsuka/chat-adapter-qq";
@@ -226,6 +227,17 @@ testBot.onSlashCommand("/mention", async (event) => {
   );
 });
 
+testBot.onSlashCommand("/mention-state", async (event) => {
+  await event.channel.post(
+    [
+      `mentioned: ${isQQMentioned(event) ? "yes" : "no"}`,
+      `channelId: ${event.channel.id}`,
+      `command: ${event.command}`,
+      `text: ${event.text || "(empty)"}`,
+    ].join("\n"),
+  );
+});
+
 testBot.onSlashCommand("/stream", async (event) => {
   console.log("!!!!!!!!!! /stream command triggered", {
     threadId: event.channel.id,
@@ -267,8 +279,31 @@ testBot.onSlashCommand("/stream", async (event) => {
   });
 });
 
+testBot.onNewMessage(/^普通消息测试(?:\s+(.+))?$/i, async (thread, message) => {
+  console.log("!!!!!!!!!! onNewMessage", {
+    isMention: message.isMention,
+    mentioned: isQQMentioned(message),
+    text: message.text,
+    threadId: thread.id,
+  });
+  if (qqDebugPayloads) {
+    console.log("[qq:raw-message]", JSON.stringify(message.raw, null, 2));
+  }
+
+  await thread.post(
+    [
+      "普通群消息已触发 onNewMessage",
+      `isMention: ${message.isMention === true ? "yes" : "no"}`,
+      `mentioned(raw): ${isQQMentioned(message) ? "yes" : "no"}`,
+      `threadId: ${thread.id}`,
+    ].join("\n"),
+  );
+});
+
 testBot.onDirectMessage(async (thread, message) => {
   console.log("!!!!!!!!!! onDirectMessage", {
+    isMention: message.isMention,
+    mentioned: isQQMentioned(message),
     text: message.text,
     threadId: thread.id,
   });
@@ -281,6 +316,8 @@ testBot.onDirectMessage(async (thread, message) => {
 
 testBot.onSubscribedMessage(async (thread, message) => {
   console.log("!!!!!!!!!! onSubscribedMessage", {
+    isMention: message.isMention,
+    mentioned: isQQMentioned(message),
     text: message.text,
     threadId: thread.id,
   });

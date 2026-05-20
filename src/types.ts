@@ -148,7 +148,8 @@ export interface QQWebhookPayload<
 /** QQ dispatch event types treated as inbound messages by Chat SDK. */
 export type QQMessageEventType =
   | "C2C_MESSAGE_CREATE"
-  | "GROUP_AT_MESSAGE_CREATE";
+  | "GROUP_AT_MESSAGE_CREATE"
+  | "GROUP_MESSAGE_CREATE";
 
 /** QQ dispatch event types treated as Chat SDK actions. */
 export type QQActionEventType = "INTERACTION_CREATE";
@@ -200,6 +201,24 @@ export interface QQMessageAttachment {
   asr_refer_text?: string;
   /** Media width for image-like attachment. */
   width?: number;
+}
+
+/** QQ mention payload from group message events. */
+export interface QQMessageMention {
+  /** Bot/user numeric id when provided by QQ. */
+  id?: string;
+  /** Whether the mentioned user is a bot. */
+  bot?: boolean;
+  /** Member openid in group scene. */
+  member_openid?: string;
+  /** Display nickname for the mentioned user. */
+  nickname?: string;
+  /** Mention scope. */
+  scope?: "all" | "single" | string;
+  /** User openid when provided by QQ. */
+  user_openid?: string;
+  /** Whether this mention targets the current bot. */
+  is_you?: boolean;
 }
 
 export interface QQMessageElement {
@@ -301,8 +320,12 @@ export interface QQMediaUploadResponse {
 
 /** Shared raw message shape used for inbound and outbound normalization. */
 export interface QQBaseMessage {
+  /** Original QQ dispatch event type for normalized inbound messages. */
+  _chat_event_type?: QQMessageEventType;
   /** Internal flag set by adapter for locally posted messages. */
   _chat_is_outbound?: boolean;
+  /** Whether this inbound message mentioned the current bot. */
+  _chat_is_mention?: boolean;
   /** Internal normalized thread id storage value. */
   _chat_thread_id?: string;
   /** Internal normalized thread scene type. */
@@ -331,6 +354,8 @@ export interface QQBaseMessage {
   msg_elements?: QQMessageElement[];
   /** QQ message scene metadata, including msg_idx/ref_msg_idx values. */
   message_scene?: QQMessageScene;
+  /** QQ group mention payloads, if the event includes them. */
+  mentions?: QQMessageMention[];
   /** QQ message type code. */
   message_type?: number;
   /** User openid from QQ payloads. */
@@ -392,6 +417,7 @@ export type QQPlatformEventType =
 export interface QQMessageEventDataMap {
   C2C_MESSAGE_CREATE: QQIncomingMessage;
   GROUP_AT_MESSAGE_CREATE: QQIncomingMessage;
+  GROUP_MESSAGE_CREATE: QQIncomingMessage;
 }
 
 export interface QQActionEventDataMap {

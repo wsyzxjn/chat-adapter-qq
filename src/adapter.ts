@@ -438,6 +438,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       },
       formatted: this.converter.toAst(content),
       id: raw.id ?? raw.msg_id ?? crypto.randomUUID(),
+      ...(raw._chat_is_mention !== undefined ? { isMention: raw._chat_is_mention } : {}),
       metadata,
       raw,
       text: this.converter.extractPlainText(content),
@@ -1068,6 +1069,8 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     const normalizedRaw: QQRawMessage = {
       ...raw,
       ...this.getQuotedMessageFields(raw),
+      _chat_event_type: payload.t,
+      _chat_is_mention: this.isMentionEvent(payload.t, raw),
       _chat_thread_id: toThreadStorageId(thread),
       _chat_thread_type: thread.type,
     };
@@ -1180,11 +1183,16 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   }
 
   private processSlashCommand(threadId: string, message: Message<QQRawMessage>, options?: WebhookOptions): boolean {
-    if (!this.chat || !message.text.startsWith("/")) {
+    if (!this.chat) {
       return false;
     }
 
-    const [command = "", ...args] = message.text.trim().split(/\s+/);
+    const slashText = this.normalizeSlashCommandText(message);
+    if (!slashText.startsWith("/")) {
+      return false;
+    }
+
+    const [command = "", ...args] = slashText.trim().split(/\s+/);
     if (!command || command === "/") {
       return false;
     }
@@ -1202,6 +1210,25 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       options,
     );
     return true;
+  }
+
+  private normalizeSlashCommandText(message: Message<QQRawMessage>): string {
+    let text = message.text.trimStart();
+    if (message.raw._chat_is_mention !== true) {
+      return text;
+    }
+
+    let previous: string;
+    do {
+      previous = text;
+      text = text
+        .replace(/^<@!?[^>\s]+>\s*/u, "")
+        .replace(/^<qqbot-at-user\s+id=(?:"[^"]+"|'[^']+')[^>]*\/>\s*/u, "")
+        .replace(/^@\S+\s+/u, "")
+        .trimStart();
+    } while (text !== previous);
+
+    return text;
   }
 
   private async acknowledgeInteraction(interactionId: string): Promise<void> {
@@ -1241,6 +1268,13 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     }
     const userOpenId = raw.author?.user_openid ?? raw.user_openid ?? raw.openid;
     return userOpenId ? { type: "c2c", userOpenId } : null;
+  }
+
+  private isMentionEvent(eventType: QQMessageEventType, raw: QQIncomingMessage): boolean {
+    if (eventType === "C2C_MESSAGE_CREATE" || eventType === "GROUP_AT_MESSAGE_CREATE") {
+      return true;
+    }
+    return raw.mentions?.some((mention) => mention.is_you === true) === true;
   }
 
   private resolveThreadFromInteraction(raw: QQInteractionPayload): QQThreadId | null {

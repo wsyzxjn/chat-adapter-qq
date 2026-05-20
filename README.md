@@ -162,6 +162,24 @@ await qq.postArk("qq:c2c/<openid>", {
 
 Embed 在 QQ 官方 C2C/GROUP 场景下不支持，当前不适配。
 
+## 群消息、命令与提及
+
+适配器支持 `GROUP_AT_MESSAGE_CREATE` 和 `GROUP_MESSAGE_CREATE`。QQ 侧开启普通群消息事件后，不带 @ 的群消息也会进入 Chat SDK message 路由；是否响应由 `onNewMessage(pattern)` 或订阅状态决定。
+
+群内命令不要求 @，`/help` 和 `@机器人 /help` 都会进入 `onSlashCommand("/help")`。`onSlashCommand` 没有标准 `message.isMention` 字段，如需判断这次命令是否由 @ 触发，可以使用 QQ 专有辅助函数：
+
+```ts
+import { isQQMentioned } from "@amatsuka/chat-adapter-qq";
+
+bot.onSlashCommand("/help", async (event) => {
+  if (isQQMentioned(event)) {
+    await event.channel.post("你是 @ 我触发的命令");
+    return;
+  }
+  await event.channel.post("你是直接输入命令触发的");
+});
+```
+
 ## Raw Payload
 
 QQ 官方字段会保留在 `message.raw` / `event.payload` 中。适配器只把跨平台能力映射到 Chat SDK 标准字段，平台特有数据不强行塞进标准模型。
@@ -287,6 +305,8 @@ QQ_SOCKET_MODE_URL=
 - `/jsx-image-url`：发送包含外部 URL 图片的 Card 消息（走 Markdown，可交错排版）
 - `/ark`：发送 QQ Ark 消息
 - `/mention`：@发送者测试 mentionUser
+- `/mention-state`：测试 `/mention-state` 与 `@bot /mention-state` 的提及状态差异
+- `普通消息测试`：测试群普通消息进入 `onNewMessage`，并输出 `isMention` 与 raw 提及状态
 
 ## 参考
 

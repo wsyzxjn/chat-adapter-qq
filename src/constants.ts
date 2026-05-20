@@ -67,6 +67,7 @@ export const APP_ID_HEADER = "X-Bot-Appid";
 export const MESSAGE_EVENT_TYPES = [
   "C2C_MESSAGE_CREATE",
   "GROUP_AT_MESSAGE_CREATE",
+  "GROUP_MESSAGE_CREATE",
 ] as const satisfies readonly QQMessageEventType[];
 const MESSAGE_EVENT_TYPE_SET: ReadonlySet<string> = new Set(MESSAGE_EVENT_TYPES);
 

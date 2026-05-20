@@ -1,7 +1,7 @@
 import type { ChatInstance, Logger } from "chat";
 import { Actions, Button, Card, CardLink, CardText, Divider, Field, Fields, Image, LinkButton, Section, Table } from "chat";
-import { QQAdapter } from "@amatsuka/chat-adapter-qq";
-import type { QQSocketModeAdapterConfig, QQWebhookAdapterConfig } from "@amatsuka/chat-adapter-qq";
+import { QQAdapter, isQQMentioned } from "@amatsuka/chat-adapter-qq";
+import type { QQRawMessage, QQSocketModeAdapterConfig, QQWebhookAdapterConfig } from "@amatsuka/chat-adapter-qq";
 import { describe, it, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 
@@ -338,9 +338,78 @@ describe("QQAdapter webhook events", () => {
         userId: "member-openid",
       },
       id: "message-1",
+      isMention: true,
+      raw: {
+        _chat_event_type: "GROUP_AT_MESSAGE_CREATE",
+        _chat_is_mention: true,
+      },
       text: "hello group",
       threadId: "qq:group/group-openid",
     });
+    assert.strictEqual(isQQMentioned(processMessage.mock.calls[0]?.arguments[2]), true);
+  });
+
+  it("dispatches non-mention group message events as regular messages", async () => {
+    const adapter = createAdapter({
+      strictWebhookEvents: true,
+    });
+    const { processMessage, processSlashCommand } = await initializeWithProcessSlashCommandSpy(adapter);
+
+    const response = await adapter.handleWebhook(
+      new Request("https://example.test/webhooks/qq", {
+        body: JSON.stringify({
+          d: {
+            author: {
+              member_openid: "member-openid",
+            },
+            content: "hello without mention",
+            group_openid: "group-openid",
+            id: "message-1",
+            mentions: [
+              {
+                is_you: false,
+                member_openid: "other-member-openid",
+                nickname: "Other",
+              },
+            ],
+            timestamp: "2026-05-09T12:00:00+08:00",
+          },
+          id: "event-1",
+          op: 0,
+          s: 7,
+          t: "GROUP_MESSAGE_CREATE",
+        }),
+        headers: {
+          "X-Bot-Appid": APP_ID,
+        },
+        method: "POST",
+      }),
+    );
+
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(processMessage.mock.callCount(), 1);
+    assert.strictEqual(processSlashCommand.mock.callCount(), 0);
+    const message = processMessage.mock.calls[0]?.arguments[2];
+    const raw = (message as { raw: QQRawMessage }).raw;
+    assertMatchObject(message, {
+      id: "message-1",
+      isMention: false,
+      raw: {
+        _chat_event_type: "GROUP_MESSAGE_CREATE",
+        _chat_is_mention: false,
+        mentions: [
+          {
+            is_you: false,
+            member_openid: "other-member-openid",
+            nickname: "Other",
+          },
+        ],
+      },
+      text: "hello without mention",
+      threadId: "qq:group/group-openid",
+    });
+    assert.strictEqual(raw.mentions?.[0]?.nickname, "Other");
+    assert.strictEqual(isQQMentioned(message), false);
   });
 
   it("normalizes QQ quoted message data from message scene elements", async () => {
@@ -561,12 +630,125 @@ describe("QQAdapter webhook events", () => {
     assertMatchObject(processSlashCommand.mock.calls[0]?.arguments[0], {
       channelId: "qq:c2c/user-openid",
       command: "/button",
+      raw: {
+        _chat_event_type: "C2C_MESSAGE_CREATE",
+        _chat_is_mention: true,
+      },
       text: "extra args",
       triggerId: "message-1",
       user: {
         userId: "user-openid",
       },
     });
+    assert.strictEqual(isQQMentioned(processSlashCommand.mock.calls[0]?.arguments[0]), true);
+  });
+
+  it("dispatches non-mention group slash commands without regular message dispatch", async () => {
+    const adapter = createAdapter();
+    const { processMessage, processSlashCommand } = await initializeWithProcessSlashCommandSpy(adapter);
+
+    const response = await adapter.handleWebhook(
+      new Request("https://example.test/webhooks/qq", {
+        body: JSON.stringify({
+          d: {
+            author: {
+              member_openid: "member-openid",
+            },
+            content: "/help topic",
+            group_openid: "group-openid",
+            id: "message-1",
+            timestamp: "2026-05-09T12:00:00+08:00",
+          },
+          id: "event-1",
+          op: 0,
+          s: 12,
+          t: "GROUP_MESSAGE_CREATE",
+        }),
+        headers: {
+          "X-Bot-Appid": APP_ID,
+        },
+        method: "POST",
+      }),
+    );
+
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(processMessage.mock.callCount(), 0);
+    assert.strictEqual(processSlashCommand.mock.callCount(), 1);
+    assertMatchObject(processSlashCommand.mock.calls[0]?.arguments[0], {
+      channelId: "qq:group/group-openid",
+      command: "/help",
+      raw: {
+        _chat_event_type: "GROUP_MESSAGE_CREATE",
+        _chat_is_mention: false,
+      },
+      text: "topic",
+      triggerId: "message-1",
+      user: {
+        userId: "member-openid",
+      },
+    });
+    assert.strictEqual(isQQMentioned(processSlashCommand.mock.calls[0]?.arguments[0]), false);
+  });
+
+  it("dispatches mention-prefixed group slash commands", async () => {
+    const adapter = createAdapter();
+    const { processMessage, processSlashCommand } = await initializeWithProcessSlashCommandSpy(adapter);
+
+    const response = await adapter.handleWebhook(
+      new Request("https://example.test/webhooks/qq", {
+        body: JSON.stringify({
+          d: {
+            author: {
+              member_openid: "member-openid",
+            },
+            content: "@qq-bot /help topic",
+            group_openid: "group-openid",
+            id: "message-1",
+            mentions: [
+              {
+                is_you: true,
+                member_openid: "bot-member-openid",
+                nickname: "qq-bot",
+              },
+            ],
+            timestamp: "2026-05-09T12:00:00+08:00",
+          },
+          id: "event-1",
+          op: 0,
+          s: 12,
+          t: "GROUP_AT_MESSAGE_CREATE",
+        }),
+        headers: {
+          "X-Bot-Appid": APP_ID,
+        },
+        method: "POST",
+      }),
+    );
+
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(processMessage.mock.callCount(), 0);
+    assert.strictEqual(processSlashCommand.mock.callCount(), 1);
+    assertMatchObject(processSlashCommand.mock.calls[0]?.arguments[0], {
+      channelId: "qq:group/group-openid",
+      command: "/help",
+      raw: {
+        _chat_event_type: "GROUP_AT_MESSAGE_CREATE",
+        _chat_is_mention: true,
+        mentions: [
+          {
+            is_you: true,
+            member_openid: "bot-member-openid",
+            nickname: "qq-bot",
+          },
+        ],
+      },
+      text: "topic",
+      triggerId: "message-1",
+      user: {
+        userId: "member-openid",
+      },
+    });
+    assert.strictEqual(isQQMentioned(processSlashCommand.mock.calls[0]?.arguments[0]), true);
   });
 });
 

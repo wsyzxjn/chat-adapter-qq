@@ -1,6 +1,7 @@
 export { QQAdapter } from "./adapter.js";
 export { QQ_INTENTS } from "./constants.js";
 export { QQFormatConverter } from "./format-converter.js";
+export { isQQMentioned } from "./mentions.js";
 export type {
   QQAccessTokenResponse,
   QQAdapterBaseConfig,
@@ -19,6 +20,7 @@ export type {
   QQMessageEventDataMap,
   QQMessageAttachment,
   QQMessageEventType,
+  QQMessageMention,
   QQMediaPayload,
   QQMediaUploadRequest,
   QQMediaUploadResponse,
