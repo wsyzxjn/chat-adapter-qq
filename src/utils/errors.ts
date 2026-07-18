@@ -4,7 +4,18 @@ import { assertNever } from "./assert.js";
 type QQMappedErrorType = "AUTH_FAILED" | "NOT_FOUND" | "PERMISSION_DENIED" | "RATE_LIMIT";
 
 const QQ_ERROR_CODE_MAP = new Map<number, QQMappedErrorType>([
+  [20028, "RATE_LIMIT"],
   [22009, "RATE_LIMIT"],
+  [304019, "RATE_LIMIT"],
+  [304035, "RATE_LIMIT"],
+  [304045, "RATE_LIMIT"],
+  [304047, "RATE_LIMIT"],
+  [304049, "RATE_LIMIT"],
+  [304050, "RATE_LIMIT"],
+  [610013, "RATE_LIMIT"],
+  [620006, "RATE_LIMIT"],
+  [1100100, "RATE_LIMIT"],
+  [1100308, "RATE_LIMIT"],
   [11241, "AUTH_FAILED"],
   [11242, "AUTH_FAILED"],
   [11243, "AUTH_FAILED"],
@@ -20,12 +31,8 @@ const QQ_ERROR_CODE_MAP = new Map<number, QQMappedErrorType>([
   [304027, "PERMISSION_DENIED"],
   [304028, "PERMISSION_DENIED"],
   [304031, "PERMISSION_DENIED"],
-  [304045, "PERMISSION_DENIED"],
   [304046, "PERMISSION_DENIED"],
-  [304047, "PERMISSION_DENIED"],
   [304048, "PERMISSION_DENIED"],
-  [304049, "PERMISSION_DENIED"],
-  [304050, "PERMISSION_DENIED"],
   [50045, "PERMISSION_DENIED"],
   [50046, "PERMISSION_DENIED"],
   [50047, "PERMISSION_DENIED"],
@@ -50,6 +57,7 @@ interface QQParsedOpenApiError {
 export function toChatError(params: {
   endpoint: string;
   message: string;
+  retryAfterMs?: number;
   responseBody?: string;
   status?: number;
 }): ChatError | RateLimitError {
@@ -58,13 +66,13 @@ export function toChatError(params: {
   const mappedCodeType = parsedError.code !== undefined ? QQ_ERROR_CODE_MAP.get(parsedError.code) : undefined;
 
   if (params.status === 429) {
-    return new RateLimitError(`${params.message} at ${params.endpoint}${detail}`);
+    return new RateLimitError(`${params.message} at ${params.endpoint}${detail}`, params.retryAfterMs);
   }
 
   if (mappedCodeType) {
     switch (mappedCodeType) {
       case "RATE_LIMIT":
-        return new RateLimitError(`${params.message} at ${params.endpoint}${detail}`);
+        return new RateLimitError(`${params.message} at ${params.endpoint}${detail}`, params.retryAfterMs);
       case "AUTH_FAILED":
         return new ChatError(`${params.message} at ${params.endpoint}${detail}`, "AUTH_FAILED");
       case "PERMISSION_DENIED":

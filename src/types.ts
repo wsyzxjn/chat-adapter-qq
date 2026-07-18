@@ -59,12 +59,16 @@ export type QQSocketModeWebSocketFactory = (
 ) => QQSocketModeWebSocket;
 
 export interface QQSocketModeOptions {
+  /** Automatically start every recommended gateway shard. Defaults to true unless `shard` is set. */
+  autoSharding?: boolean;
   /** Gateway identify properties. Defaults to this package name. */
   properties?: Record<string, string>;
   /** Automatically reconnect after gateway close/reconnect requests. Defaults to true. */
   reconnect?: boolean;
   /** Delay before reconnecting in milliseconds. Defaults to 1000. */
   reconnectDelayMs?: number;
+  /** Maximum exponential reconnect delay in milliseconds. Defaults to 30000. */
+  maxReconnectDelayMs?: number;
   /** Whether to attempt opcode 6 resume when a session id is available. Defaults to true. */
   resume?: boolean;
   /** Gateway shard tuple. Defaults to [0, 1]. */
@@ -179,6 +183,8 @@ export interface QQMessageAuthor {
   nick?: string;
   /** User openid in c2c scene. */
   user_openid?: string;
+  /** Cross-application union openid when returned by QQ. */
+  union_openid?: string;
   /** Username/handle. */
   username?: string;
 }
@@ -320,6 +326,12 @@ export interface QQMediaUploadResponse {
 
 /** Shared raw message shape used for inbound and outbound normalization. */
 export interface QQBaseMessage {
+  /** QQ async-acceptance business code for messages awaiting audit/delivery. */
+  _chat_async_code?: number;
+  /** QQ async-acceptance description. */
+  _chat_async_message?: string;
+  /** Delivery state known at the time the raw message was created. */
+  _chat_delivery_status?: "accepted" | "delivered" | "rejected";
   /** Original QQ dispatch event type for normalized inbound messages. */
   _chat_event_type?: QQMessageEventType;
   /** Internal flag set by adapter for locally posted messages. */
@@ -330,6 +342,8 @@ export interface QQBaseMessage {
   _chat_thread_id?: string;
   /** Internal normalized thread scene type. */
   _chat_thread_type?: QQThreadType;
+  /** HTTP status returned by the QQ send API. */
+  _chat_http_status?: number;
   /** Normalized quoted/referenced QQ message data, derived from message_scene/msg_elements. */
   _chat_quoted_message?: QQQuotedMessage;
   /** File attachments. */
@@ -373,6 +387,7 @@ export interface QQInteractionPayload {
     resolved?: {
       button_data?: string;
       button_id?: string;
+      feature_id?: string;
       message_id?: string;
       user_id?: string;
     };
@@ -383,6 +398,9 @@ export interface QQInteractionPayload {
   id?: string;
   message_id?: string;
   openid?: string;
+  group_policy?: number;
+  mention_patterns?: string[];
+  require_mention?: boolean;
   scene?: "c2c" | "group" | string;
   timestamp?: string;
   user_openid?: string;
@@ -404,6 +422,18 @@ export interface QQThreadResolvableEventData {
   user_openid?: string;
 }
 
+/** Async message audit result dispatched by QQ for proactive/public messages. */
+export interface QQMessageAuditEventData extends QQThreadResolvableEventData {
+  /** Audit task id returned by the asynchronous send path. */
+  audit_id?: string;
+  /** Guild channel id when the audited message belongs to a channel. */
+  channel_id?: string;
+  /** Guild id when the audited message belongs to a channel. */
+  guild_id?: string;
+  /** Audited message id. */
+  message_id?: string;
+}
+
 export type QQPlatformEventType =
   | "C2C_MSG_REJECT"
   | "C2C_MSG_RECEIVE"
@@ -412,7 +442,9 @@ export type QQPlatformEventType =
   | "GROUP_ADD_ROBOT"
   | "GROUP_DEL_ROBOT"
   | "GROUP_MSG_REJECT"
-  | "GROUP_MSG_RECEIVE";
+  | "GROUP_MSG_RECEIVE"
+  | "MESSAGE_AUDIT_PASS"
+  | "MESSAGE_AUDIT_REJECT";
 
 export interface QQMessageEventDataMap {
   C2C_MESSAGE_CREATE: QQIncomingMessage;
@@ -433,6 +465,8 @@ export interface QQPlatformEventDataMap {
   GROUP_DEL_ROBOT: QQThreadResolvableEventData;
   GROUP_MSG_REJECT: QQThreadResolvableEventData;
   GROUP_MSG_RECEIVE: QQThreadResolvableEventData;
+  MESSAGE_AUDIT_PASS: QQMessageAuditEventData;
+  MESSAGE_AUDIT_REJECT: QQMessageAuditEventData;
 }
 
 export type QQKnownDispatchEventType =
@@ -470,6 +504,24 @@ export interface QQInputNotifyPayload {
   input_second: number;
 }
 
+/** QQ channel message reference payload. */
+export interface QQMessageReference {
+  /** Ignore a missing/inaccessible referenced message instead of failing the send. */
+  ignore_get_message_error?: boolean;
+  /** Message id to render as the quoted message. */
+  message_id: string;
+}
+
+/** QQ-specific options that are intentionally outside Chat SDK's portable message shape. */
+export interface QQSendMessageOptions {
+  /** Send a C2C proactive wake-up message. Mutually exclusive with passive reply context. */
+  isWakeup?: boolean;
+  /** QQ channel quoted-message rendering options. */
+  messageReference?: QQMessageReference;
+  /** Reuse cached `msg_id` / `event_id` reply context. Defaults to true. */
+  passiveContext?: boolean;
+}
+
 /** QQ OpenAPI send-message request body. */
 export interface QQSendMessageRequest {
   /** QQ Ark message payload. */
@@ -480,12 +532,16 @@ export interface QQSendMessageRequest {
   event_id?: string;
   /** QQ input status notification payload. */
   input_notify?: QQInputNotifyPayload;
+  /** C2C proactive wake-up flag. */
+  is_wakeup?: boolean;
   /** QQ interactive keyboard payload. */
   keyboard?: QQKeyboardPayload;
   /** QQ markdown message payload. */
   markdown?: QQMarkdownPayload;
   /** QQ media message payload. */
   media?: QQMediaPayload;
+  /** QQ channel quoted-message rendering payload. */
+  message_reference?: QQMessageReference;
   /** Passive reply context field. */
   msg_id?: string;
   /** Passive reply sequence in the same msg_id context. */
@@ -524,11 +580,11 @@ export interface QQStreamMessageRequest {
   /** Current full message content (replace mode). */
   content_raw: string;
   /** Passive reply context event id. */
-  event_id?: string;
+  event_id: string;
   /** Passive reply context message id. */
-  msg_id?: string;
+  msg_id: string;
   /** Passive reply sequence. */
-  msg_seq?: number;
+  msg_seq: number;
   /** Frame index in the stream, starting from 0. */
   index: number;
   /** Stream message ID returned from first call, required for subsequent calls. */

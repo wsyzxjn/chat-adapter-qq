@@ -87,6 +87,8 @@ export const PLATFORM_EVENT_TYPES = [
   "GROUP_DEL_ROBOT",
   "GROUP_MSG_REJECT",
   "GROUP_MSG_RECEIVE",
+  "MESSAGE_AUDIT_PASS",
+  "MESSAGE_AUDIT_REJECT",
 ] as const satisfies readonly QQPlatformEventType[];
 const PLATFORM_EVENT_TYPE_SET: ReadonlySet<string> = new Set(PLATFORM_EVENT_TYPES);
 

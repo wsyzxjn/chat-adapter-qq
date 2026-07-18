@@ -58,6 +58,7 @@ import type {
   QQQuotedMessage,
   QQRawMessage,
   QQSendMessageRequest,
+  QQSendMessageOptions,
   QQSentMessage,
   QQSocketModeOptions,
   QQStreamMessageRequest,
@@ -143,6 +144,11 @@ interface SignatureCheckResult {
   reason?: string;
 }
 
+interface ApiRequestResult<T> {
+  body: T;
+  status: number;
+}
+
 type DispatchProcessResult = "handled" | "ignored" | "not_initialized" | "unsupported";
 
 const ED25519_PRIVATE_KEY_DER_PREFIX = new Uint8Array([
@@ -163,6 +169,7 @@ const QQ_SIGNATURE_SIZE = 64;
  */
 export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   readonly name = "qq";
+  readonly persistThreadHistory = true;
   readonly userName: string;
 
   private chat: ChatInstance | null = null;
@@ -176,7 +183,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   private readonly messageCache = new Map<string, Message<QQRawMessage>[]>();
   private readonly passiveContextByThread = new Map<string, PassiveContext>();
   private accessTokenCache: AccessTokenCache | null = null;
-  private gatewayClient: QQGatewayClient | null = null;
+  private gatewayClients: QQGatewayClient[] = [];
   private signingKeysCache: SigningKeys | null = null;
 
   constructor(config: QQAdapterConfig) {
@@ -205,27 +212,69 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   }
 
   async startSocketMode(options?: QQSocketModeOptions): Promise<void> {
-    if (this.gatewayClient?.isActive) {
+    if (this.gatewayClients.some((client) => client.isActive)) {
       this.logger.debug("QQ gateway already started");
       return;
     }
 
-    this.gatewayClient = new QQGatewayClient({
-      getGatewayInfo: () => this.fetchGatewayBot(),
+    const socketOptions: QQSocketModeOptions = {
+      ...this.config.socketMode,
+      ...options,
+    };
+    const needsGatewayInfo = !socketOptions.url
+      || (!socketOptions.shard && socketOptions.autoSharding !== false);
+    const gatewayInfo = needsGatewayInfo
+      ? await this.fetchGatewayBot()
+      : { url: socketOptions.url! };
+    const url = socketOptions.url ?? gatewayInfo.url;
+    const recommendedShards = socketOptions.autoSharding === false
+      ? 1
+      : Math.max(1, Math.trunc(gatewayInfo.shards ?? 1));
+    const shards: Array<readonly [number, number]> = socketOptions.shard
+      ? [socketOptions.shard]
+      : Array.from({ length: recommendedShards }, (_, index) => [index, recommendedShards] as const);
+    const startLimit = gatewayInfo.session_start_limit;
+
+    if (startLimit && startLimit.remaining < shards.length) {
+      throw new RateLimitError(
+        `QQ gateway requires ${shards.length} sessions but only ${startLimit.remaining} starts remain.`,
+        startLimit.reset_after,
+      );
+    }
+
+    const clients = shards.map((shard) => new QQGatewayClient({
+      getGatewayInfo: async () => ({ ...gatewayInfo, url }),
       getToken: () => this.getAccessToken(),
       logger: this.logger,
       onDispatch: (payload) => this.handleSocketModePayload(payload),
       options: {
-        ...this.config.socketMode,
-        ...options,
+        ...socketOptions,
+        shard,
+        url,
       },
-    });
-    await this.gatewayClient.start();
+    }));
+    this.gatewayClients = clients;
+
+    const maxConcurrency = Math.max(1, Math.trunc(startLimit?.max_concurrency ?? clients.length));
+    try {
+      for (let index = 0; index < clients.length; index += maxConcurrency) {
+        const batch = clients.slice(index, index + maxConcurrency);
+        await Promise.all(batch.map((client) => client.start()));
+        if (index + maxConcurrency < clients.length) {
+          await new Promise((resolve) => setTimeout(resolve, 5_000));
+        }
+      }
+    } catch (error) {
+      await Promise.all(clients.map((client) => client.stop()));
+      this.gatewayClients = [];
+      throw error;
+    }
   }
 
   async stopSocketMode(): Promise<void> {
-    await this.gatewayClient?.stop();
-    this.gatewayClient = null;
+    const clients = this.gatewayClients;
+    this.gatewayClients = [];
+    await Promise.all(clients.map((client) => client.stop()));
   }
 
   async handleSocketModePayload(payload: QQWebhookPayload<unknown>, options?: WebhookOptions): Promise<void> {
@@ -447,10 +496,25 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   }
 
   async postMessage(threadId: string, message: AdapterPostableMessage): Promise<RawMessage<QQRawMessage>> {
+    return this.postQQMessage(threadId, message);
+  }
+
+  async postQQMessage(
+    threadId: string,
+    message: AdapterPostableMessage,
+    options: QQSendMessageOptions = {},
+  ): Promise<RawMessage<QQRawMessage>> {
     validateMessagePayload(message);
     const thread = this.decodeThreadId(threadId);
     this.assertFeature(thread, "postMessage");
-    const payloads = await this.buildSendPayloads(threadId, thread, message);
+    if (options.isWakeup && thread.type !== "c2c") {
+      throw new ChatError("QQ `isWakeup` is only valid for C2C messages.", "INVALID_REQUEST");
+    }
+    if (options.isWakeup && options.passiveContext === true) {
+      throw new ChatError("QQ `isWakeup` cannot be combined with passive reply context.", "INVALID_REQUEST");
+    }
+
+    const payloads = await this.buildSendPayloads(threadId, thread, message, options);
     let sent: RawMessage<QQRawMessage> | null = null;
     for (const payload of payloads) {
       sent = await this.postPayload(threadId, thread, payload);
@@ -476,19 +540,36 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     payload: QQSendMessageRequest,
   ): Promise<RawMessage<QQRawMessage>> {
     const path = getPostMessagePath(thread);
-    const sentRaw = await this.apiRequest<QQSentMessage>(path, {
+    const result = await this.apiRequestWithMeta<QQSentMessage & {
+      audit_id?: string;
+      code?: number;
+      message?: string;
+    }>(path, {
       body: JSON.stringify(payload),
       method: "POST",
     });
+    const sentRaw = result.body;
+    const asynchronouslyAccepted = result.status === 201 || result.status === 202;
     const content = sentRaw.content ?? payload.content ?? payload.markdown?.content;
+    const generatedId = asynchronouslyAccepted
+      ? `qq:pending/${sentRaw.audit_id ?? crypto.randomUUID()}`
+      : crypto.randomUUID();
 
     const enrichedRaw: QQRawMessage = {
       ...sentRaw,
+      ...(asynchronouslyAccepted && sentRaw.code !== undefined
+        ? { _chat_async_code: sentRaw.code }
+        : {}),
+      ...(asynchronouslyAccepted && sentRaw.message
+        ? { _chat_async_message: sentRaw.message }
+        : {}),
+      _chat_delivery_status: asynchronouslyAccepted ? "accepted" : "delivered",
+      _chat_http_status: result.status,
       _chat_is_outbound: true,
       _chat_thread_id: toThreadStorageId(thread),
       _chat_thread_type: thread.type,
       author: sentRaw.author ?? this.getOutboundAuthor(thread.type),
-      id: sentRaw.id ?? crypto.randomUUID(),
+      id: sentRaw.id ?? sentRaw.msg_id ?? generatedId,
       timestamp: sentRaw.timestamp ?? new Date().toISOString(),
       ...(content !== undefined ? { content } : {}),
       ...(sentRaw.msg_id !== undefined || payload.msg_id !== undefined
@@ -551,8 +632,11 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
         input_type: 1,
       },
       msg_type: 6,
-      ...(context?.msgId ? { msg_id: context.msgId, msg_seq: context.nextMsgSeq } : {}),
-      ...(context?.eventId ? { event_id: context.eventId } : {}),
+      ...(context?.msgId
+        ? { msg_id: context.msgId, msg_seq: context.nextMsgSeq }
+        : context?.eventId
+          ? { event_id: context.eventId }
+          : {}),
     };
 
     // Advance msg_seq if used.
@@ -611,8 +695,18 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   ): Promise<RawMessage<QQRawMessage>> {
     this.logger.debug("QQ streamC2C started", { threadId, userOpenId: thread.userOpenId });
 
+    const initialContext = this.passiveContextByThread.get(threadId);
+    if (!initialContext?.msgId) {
+      this.logger.info("QQ native stream requires passive msg_id context; using fallback", { threadId });
+      return this.streamAsFallback(threadId, textStream);
+    }
+
     // Notify QQ client that bot is typing.
     await this.startTyping(threadId);
+
+    const context = this.passiveContextByThread.get(threadId)!;
+    const streamMsgSeq = context.nextMsgSeq;
+    context.nextMsgSeq += 1;
 
     const { StreamingMarkdownRenderer } = await import("chat");
     const renderer = new StreamingMarkdownRenderer();
@@ -626,8 +720,9 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     let chunkCount = 0;
 
     const UPDATE_INTERVAL_MS = 500;
-    const context = this.passiveContextByThread.get(threadId);
-    this.logger.debug("QQ streamC2C passive context", { context: { msgId: context?.msgId, eventId: context?.eventId } });
+    this.logger.debug("QQ streamC2C passive context", {
+      context: { eventId: context.eventId, msgId: context.msgId, msgSeq: streamMsgSeq },
+    });
 
     const sendChunk = async (content: string, isFinal: boolean): Promise<QQStreamMessageResponse | null> => {
       const payload: QQStreamMessageRequest = {
@@ -635,10 +730,11 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
         input_state: isFinal ? 10 : 1,
         content_type: "markdown",
         content_raw: content,
+        event_id: context.eventId ?? "",
         index,
+        msg_id: context.msgId!,
+        msg_seq: streamMsgSeq,
         ...(streamMsgId ? { stream_msg_id: streamMsgId } : {}),
-        ...(context?.msgId ? { msg_id: context.msgId } : {}),
-        ...(context?.eventId ? { event_id: context.eventId } : {}),
       };
 
       this.logger.debug("QQ stream_messages API call", { isFinal, index, contentLength: content.length, contentPreview: content.slice(0, 100) });
@@ -1073,6 +1169,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       _chat_is_mention: this.isMentionEvent(payload.t, raw),
       _chat_thread_id: toThreadStorageId(thread),
       _chat_thread_type: thread.type,
+      event_id: raw.event_id ?? payload.id,
     };
     this.logMessageElements(payload.t, normalizedRaw);
 
@@ -1101,11 +1198,12 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     }
 
     const resolved = raw.data?.resolved;
-    const actionId = resolved?.button_id ?? resolved?.button_data;
+    const actionId = resolved?.button_id ?? resolved?.feature_id ?? resolved?.button_data;
     if (!actionId) {
       this.logger.warn("QQ interaction event is missing button action data", {
         buttonDataPresent: Boolean(resolved?.button_data),
         buttonIdPresent: Boolean(resolved?.button_id),
+        featureIdPresent: Boolean(resolved?.feature_id),
         interactionId: raw.id ?? this.resolvePayloadEventId(payload),
       });
       return null;
@@ -1262,8 +1360,8 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     eventType: QQMessageEventType | QQPlatformEventType,
     raw: QQIncomingMessage | QQThreadResolvableEventData,
   ): QQThreadId | null {
-    if (eventType.startsWith("GROUP_")) {
-      const groupOpenId = raw.group_openid ?? raw.group_id;
+    const groupOpenId = raw.group_openid ?? raw.group_id;
+    if (eventType.startsWith("GROUP_") || groupOpenId) {
       return groupOpenId ? { groupOpenId, type: "group" } : null;
     }
     const userOpenId = raw.author?.user_openid ?? raw.user_openid ?? raw.openid;
@@ -1281,6 +1379,9 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     const groupOpenId = raw.group_openid;
     if (raw.scene === "group" || raw.chat_type === 1 || groupOpenId) {
       return groupOpenId ? { groupOpenId, type: "group" } : null;
+    }
+    if (raw.scene === "guild" || raw.chat_type === 0) {
+      return null;
     }
 
     const userOpenId = raw.user_openid ?? raw.openid ?? raw.data?.resolved?.user_id;
@@ -1381,24 +1482,46 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     threadId: string,
     thread: QQThreadId,
     message: AdapterPostableMessage,
+    options: QQSendMessageOptions = {},
   ): Promise<QQSendMessageRequest[]> {
     const payload = buildMessageContentPayload(this.converter, message);
     const attachments = getPostableAttachments(message);
     if (attachments.length === 0) {
-      return [this.withPassiveContext(threadId, payload)];
+      return [this.applySendOptions(threadId, thread, payload, options)];
     }
 
     const fallbackContent = payload.content ?? payload.markdown?.content ?? " ";
     const payloads: QQSendMessageRequest[] = [];
     for (const [index, attachment] of attachments.entries()) {
       const media = await this.uploadMedia(thread, attachment);
-      payloads.push(this.withPassiveContext(threadId, {
+      payloads.push(this.applySendOptions(threadId, thread, {
         content: index === 0 ? fallbackContent : " ",
         media,
         msg_type: 7,
-      }));
+      }, index === 0 ? options : { ...options, messageReference: undefined }));
     }
     return payloads;
+  }
+
+  private applySendOptions(
+    threadId: string,
+    thread: QQThreadId,
+    payload: QQSendMessageRequest,
+    options: QQSendMessageOptions,
+  ): QQSendMessageRequest {
+    if (options.isWakeup) {
+      if (thread.type !== "c2c") {
+        throw new ChatError("QQ `isWakeup` is only valid for C2C messages.", "INVALID_REQUEST");
+      }
+      payload.is_wakeup = true;
+    }
+    if (options.messageReference) {
+      payload.message_reference = options.messageReference;
+    }
+    if (options.passiveContext !== false && !options.isWakeup) {
+      return this.withPassiveContext(threadId, payload);
+    }
+    return payload;
   }
 
   private withPassiveContext(threadId: string, payload: QQSendMessageRequest): QQSendMessageRequest {
@@ -1553,6 +1676,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
         throw toChatError({
           endpoint,
           message: `QQ token request failed (${response.status})`,
+          retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
           responseBody: bodyText,
           status: response.status,
         });
@@ -1591,6 +1715,13 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     path: string,
     init: Omit<RequestInit, "headers"> & { headers?: Record<string, string> },
   ): Promise<T> {
+    return (await this.apiRequestWithMeta<T>(path, init)).body;
+  }
+
+  private async apiRequestWithMeta<T = unknown>(
+    path: string,
+    init: Omit<RequestInit, "headers"> & { headers?: Record<string, string> },
+  ): Promise<ApiRequestResult<T>> {
     const token = await this.getAccessToken();
     const timeoutMs = this.config.requestTimeoutMs ?? 10_000;
     const controller = new AbortController();
@@ -1614,16 +1745,28 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
         throw toChatError({
           endpoint,
           message: `QQ API request failed (${response.status})`,
+          retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
           responseBody: bodyText,
           status: response.status,
         });
       }
 
       if (!bodyText) {
-        return {} as T;
+        return { body: {} as T, status: response.status };
       }
 
-      return JSON.parse(bodyText) as T;
+      const body = JSON.parse(bodyText) as T;
+      const businessCode = getQQBusinessCode(body);
+      if (businessCode !== undefined && businessCode !== 0 && response.status !== 201 && response.status !== 202) {
+        throw toChatError({
+          endpoint,
+          message: `QQ API request failed (${response.status})`,
+          retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+          responseBody: bodyText,
+          status: response.status,
+        });
+      }
+      return { body, status: response.status };
     } catch (error) {
       if (error instanceof ChatError || error instanceof RateLimitError) {
         throw error;
@@ -1633,4 +1776,35 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       clearTimeout(timeoutId);
     }
   }
+}
+
+function getQQBusinessCode(body: unknown): number | undefined {
+  if (!body || typeof body !== "object") {
+    return undefined;
+  }
+  const record = body as Record<string, unknown>;
+  const value = record.code ?? record.errcode;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.trunc(parsed) : undefined;
+  }
+  return undefined;
+}
+
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.round(seconds * 1000);
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    return undefined;
+  }
+  return Math.max(0, timestamp - Date.now());
 }

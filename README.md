@@ -8,9 +8,9 @@ QQ 机器人开放平台 API v2 的 [Chat SDK](https://www.npmjs.com/package/cha
 
 - 接收 QQ 私聊（C2C）和群聊消息
 - 支持 Webhook 和 Socket Mode
-- 发送文本、QQ Markdown、Markdown Keyboard 按钮和媒体附件
+- 发送文本、QQ Markdown、Markdown Keyboard、媒体附件和 Chat SDK `files`
 - 将按钮回调映射到 `chat.onAction`
-- 支持 `chat.onDirectMessage`、`chat.openDM`、消息撤回和本进程消息缓存
+- 支持 `chat.onDirectMessage`、`chat.openDM`、消息撤回和 Chat SDK 状态持久化历史
 - 保留 QQ 原始 payload，方便读取平台特有字段
 
 ## 安装
@@ -18,6 +18,8 @@ QQ 机器人开放平台 API v2 的 [Chat SDK](https://www.npmjs.com/package/cha
 ```bash
 pnpm add @amatsuka/chat-adapter-qq chat @chat-adapter/state-memory
 ```
+
+要求 Node.js 20 或更高版本；当前适配器基于 Chat SDK 4.34。
 
 ## 快速开始
 
@@ -71,8 +73,10 @@ const qq = createQQAdapter({
   clientSecret: process.env.QQ_CLIENT_SECRET!,
   mode: "socket",
   socketMode: {
-    intents: QQ_INTENTS.GROUP_AND_C2C_EVENT | QQ_INTENTS.INTERACTION,
-    shard: [0, 1],
+    intents:
+      QQ_INTENTS.GROUP_AND_C2C_EVENT |
+      QQ_INTENTS.INTERACTION |
+      QQ_INTENTS.MESSAGE_AUDIT,
   },
 });
 
@@ -84,6 +88,8 @@ const bot = new Chat({
 
 await bot.initialize();
 ```
+
+默认会读取 `/gateway/bot` 的 `shards` 与 `session_start_limit`，自动启动全部推荐分片并遵守 Identify 并发限制。设置 `shard: [index, total]` 可只启动指定分片，设置 `autoSharding: false` 可强制单分片。连接会按 QQ Gateway 关闭码选择 Resume、重新 Identify 或停止重连，并使用带上限的指数退避。
 
 如果宿主自己维护 WebSocket，也可以把 QQ payload 交给：
 
@@ -126,6 +132,8 @@ const unsubscribe = qq.onEvent(async (event) => {
 });
 ```
 
+主动/public 消息被 QQ 以 HTTP 201/202 异步接受时，返回消息的 `raw._chat_delivery_status` 为 `accepted`，并保留 `_chat_http_status`、`_chat_async_code` 和 `_chat_async_message`。后续结果可通过 `MESSAGE_AUDIT_PASS` / `MESSAGE_AUDIT_REJECT` 监听；Socket Mode 需要订阅 `QQ_INTENTS.MESSAGE_AUDIT`。
+
 ## QQ 专有发送
 
 通用文本、Markdown、Card 和媒体附件走 `thread.post()`：
@@ -142,9 +150,26 @@ await thread.post({
 });
 ```
 
-媒体附件支持 URL 或二进制 `data` / `fetchData`，支持 `image`、`video`、`audio` 和单聊 `file`。一次传入多张 `image` 时，适配器会按 QQ OpenAPI 的单个 `media` 对象拆成多条媒体消息顺序发送。上传/登记媒体后会把返回的 `file_info`、`file_uuid` 和 `ttl` 透传到 `media`，并在当前进程内按 TTL 复用；`ttl=0` 视为长期有效，未返回 TTL 时不缓存。Chat SDK `files` 暂不支持。
+Chat SDK `files` 也会走同一上传流程：
 
-JSX/Card 里的 `Image({ url })` 和 `imageUrl` 会自动转成 QQ media，支持普通 URL 和 `data:image/...;base64,...`；`Text` / `CardText`、`CardLink`、`Fields`、`Table`、`Divider` 会渲染到 Markdown，`Button` / `LinkButton` 会渲染为 QQ Keyboard。
+```ts
+import { readFile } from "node:fs/promises";
+
+await thread.post({
+  raw: "月报",
+  files: [
+    {
+      data: await readFile("./report.pdf"),
+      filename: "report.pdf",
+      mimeType: "application/pdf",
+    },
+  ],
+});
+```
+
+媒体附件支持 URL 或二进制 `data` / `fetchData`，支持 `image`、`video`、`audio` 和 C2C/群聊 `file`。QQ OpenAPI 每条消息只接受一个 `media` 对象，因此多个附件/文件会按输入顺序拆成多条消息。上传/登记媒体后会把返回的 `file_info`、`file_uuid` 和 `ttl` 透传到 `media`，并在当前进程内按 TTL 复用；`ttl=0` 视为长期有效，未返回 TTL 时不缓存。
+
+JSX/Card 里的 `Image({ url })` 和 `imageUrl` 会自动转成 QQ media，支持普通 URL 和 `data:image/...;base64,...`；`Text` / `CardText`、`CardLink`、`Fields`、`Table`（含 `caption`）、`Chart`、`Divider` 会渲染到 Markdown，`Button` / `LinkButton` 会渲染为 QQ Keyboard。
 
 QQ 专有能力挂在适配器实例上。ARK 消息可直接调用：
 
@@ -159,6 +184,23 @@ await qq.postArk("qq:c2c/<openid>", {
   ],
 });
 ```
+
+需要使用 QQ 平台专有字段时，可调用 `postQQMessage`。`isWakeup` 会发送 C2C 主动唤醒消息，并自动禁用缓存的被动回复上下文；`messageReference` 会原样映射为 QQ `message_reference`，具体场景权限仍由 QQ 服务端判定。
+
+```ts
+await qq.postQQMessage("qq:c2c/<openid>", "主动提醒", {
+  isWakeup: true,
+});
+
+await qq.postQQMessage("qq:c2c/<openid>", "引用回复", {
+  messageReference: {
+    message_id: "<message_id>",
+    ignore_get_message_error: true,
+  },
+});
+```
+
+C2C `stream()` 在存在入站 `msg_id` 被动上下文时使用 QQ 原生 `stream_messages`，并在整个流中固定使用同一个 `msg_seq`；主动场景或协议调用失败时会安全降级为普通消息。
 
 Embed 在 QQ 官方 C2C/GROUP 场景下不支持，当前不适配。
 
@@ -215,10 +257,9 @@ qq:guild/<guild_id>/<channel_id>
 - `addReaction` / `removeReaction`
 - modal / options load
 - schedule message
-- Chat SDK `files`
 - QQ Embed 发送
 
-`fetchMessages` / `fetchMessage` 使用本进程缓存，不是 QQ 服务端历史消息查询。
+`fetchMessages` / `fetchMessage` 直接调用适配器时仍读取本进程缓存，不是 QQ 服务端历史消息查询。适配器同时声明了 `persistThreadHistory = true`，因此通过 Chat SDK 运行时接收/发送的线程历史会写入所配置的 state adapter，可跨进程恢复（持久性取决于所选 state adapter；`state-memory` 本身只在内存中保存）。
 
 ## 代码风格
 
@@ -288,6 +329,9 @@ pnpm run test:bot:ws
 
 ```env
 QQ_DEBUG_PAYLOADS=true
+# 默认 true；不设置 shard 时按 /gateway/bot 推荐值自动分片
+QQ_SOCKET_MODE_AUTO_SHARDING=true
+# 未设置时默认包含 GROUP_AND_C2C_EVENT、INTERACTION、MESSAGE_AUDIT
 QQ_SOCKET_MODE_INTENTS=
 QQ_SOCKET_MODE_SHARD=0,1
 QQ_SOCKET_MODE_URL=
@@ -296,17 +340,31 @@ QQ_SOCKET_MODE_URL=
 测试 bot 支持：
 
 - 私聊任意文本：回复 `echo: <文本>`
-- `/ping`
+- `/help`：显示测试命令列表
+- `/ping`、`/id`
 - `/md`
-- `/button`
+- `/button`：测试回调按钮和带稳定 ID 的 LinkButton
 - `/image`：发送 `test/images/amatsuka.jpeg`
 - `/images`：一次传入两张 `test/images/amatsuka.jpeg`
+- `/file`：通过 Chat SDK `files` 发送文本文件，可同时验证群文件接口
+- `/chart`：发送带 caption 的 Table 和 Chart 降级文本
 - `/jsx-image`：发送包含 base64 data URL 图片的 Card 消息（走 media）
 - `/jsx-image-url`：发送包含外部 URL 图片的 Card 消息（走 Markdown，可交错排版）
 - `/ark`：发送 QQ Ark 消息
+- `/stream`：测试带固定 `msg_seq` 的 C2C 原生流式消息（群聊自动降级）
+- `/wakeup`：在 C2C 中测试 `is_wakeup` 主动唤醒，并在终端打印异步接受状态
+- `/reference [message_id]`：测试 QQ `message_reference`；不传 ID 时使用当前命令消息 ID
 - `/mention`：@发送者测试 mentionUser
 - `/mention-state`：测试 `/mention-state` 与 `@bot /mention-state` 的提及状态差异
 - `普通消息测试`：测试群普通消息进入 `onNewMessage`，并输出 `isMention` 与 raw 提及状态
+
+`MESSAGE_AUDIT_PASS` / `MESSAGE_AUDIT_REJECT` 会以 `[qq:audit]` 输出到终端。也可以绕过 Bot 路由直接测试 C2C 主动唤醒发送：
+
+```bash
+pnpm run test:c2c-proactive -- <openid> "测试消息"
+```
+
+该脚本调用 `postQQMessage(..., { isWakeup: true })`，并打印 HTTP 状态、异步业务码与 delivery status。
 
 ## 参考
 

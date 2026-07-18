@@ -4,15 +4,18 @@ import {
   Button,
   Card,
   CardText,
+  Chart,
   Chat,
   ConsoleLogger,
   LinkButton,
+  Table,
 } from "chat";
 import type { Attachment, Channel, Thread } from "chat";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import {
   createQQAdapter,
   isQQMentioned,
+  QQ_INTENTS,
   type QQAdapterBaseConfig,
   type QQSocketModeOptions,
 } from "@amatsuka/chat-adapter-qq";
@@ -73,7 +76,10 @@ const qqClientSecret =
   optionalEnv("QQ_CLIENT_SECRET") ?? optionalEnv("QQ_SECRET") ?? "";
 const qqMode = resolveQQMode();
 const qqBotSecret = optionalEnv("QQ_BOT_SECRET");
-const qqSocketModeIntents = envNumber("QQ_SOCKET_MODE_INTENTS");
+const qqSocketModeIntents = envNumber("QQ_SOCKET_MODE_INTENTS")
+  ?? (QQ_INTENTS.GROUP_AND_C2C_EVENT
+    | QQ_INTENTS.INTERACTION
+    | QQ_INTENTS.MESSAGE_AUDIT);
 const qqSocketModeShard = envShard("QQ_SOCKET_MODE_SHARD");
 const qqSocketModeUrl = optionalEnv("QQ_SOCKET_MODE_URL");
 const qqDebugPayloads = envFlag("QQ_DEBUG_PAYLOADS", false);
@@ -92,9 +98,8 @@ const qqBaseConfig = {
 } satisfies QQAdapterBaseConfig;
 
 const qqSocketModeOptions = {
-  ...(qqSocketModeIntents !== undefined
-    ? { intents: qqSocketModeIntents }
-    : {}),
+  autoSharding: envFlag("QQ_SOCKET_MODE_AUTO_SHARDING", true),
+  intents: qqSocketModeIntents,
   ...(qqSocketModeShard !== undefined ? { shard: qqSocketModeShard } : {}),
   ...(qqSocketModeUrl !== undefined ? { url: qqSocketModeUrl } : {}),
 } satisfies QQSocketModeOptions;
@@ -121,6 +126,14 @@ export const testBot = new Chat({
 });
 
 qq.onEvent(async (event) => {
+  if (event.type === "MESSAGE_AUDIT_PASS" || event.type === "MESSAGE_AUDIT_REJECT") {
+    console.log("[qq:audit]", event.type, {
+      data: event.data,
+      eventId: event.eventId,
+      threadId: event.threadId,
+    });
+    return;
+  }
   console.log("[qq:event]", event.type, event.data);
 });
 
@@ -138,6 +151,17 @@ testBot.onSlashCommand("/id", async (event) => {
   await event.channel.post(
     `threadId: ${event.channel.id}, userId: ${event.user.userId}`,
   );
+});
+
+testBot.onSlashCommand("/help", async (event) => {
+  await event.channel.post([
+    "QQ test bot commands:",
+    "/ping /id /md /button",
+    "/image /images /jsx-image /jsx-image-url",
+    "/file /chart /ark /stream",
+    "/wakeup /reference [message_id]",
+    "/mention /mention-state",
+  ].join("\n"));
 });
 
 testBot.onSlashCommand("/md", async (event) => {
@@ -191,6 +215,7 @@ testBot.onSlashCommand("/button", async (event) => {
             value: "ok",
           }),
           LinkButton({
+            id: "qq_test_docs",
             label: "Docs",
             url: "https://bot.q.qq.com/wiki/develop/api-v2/",
           }),
@@ -209,6 +234,14 @@ testBot.onSlashCommand("/images", async (event) => {
   await postImagesTest(event.channel);
 });
 
+testBot.onSlashCommand("/file", async (event) => {
+  await postFileTest(event.channel);
+});
+
+testBot.onSlashCommand("/chart", async (event) => {
+  await postChartTest(event.channel);
+});
+
 testBot.onSlashCommand("/jsx-image", async (event) => {
   await postJsxImageTest(event.channel);
 });
@@ -219,6 +252,50 @@ testBot.onSlashCommand("/jsx-image-url", async (event) => {
 
 testBot.onSlashCommand("/ark", async (event) => {
   await postArkTest(event.channel);
+});
+
+testBot.onSlashCommand("/wakeup", async (event) => {
+  if (!event.channel.isDM) {
+    await event.channel.post("/wakeup 仅支持 C2C 私聊。");
+    return;
+  }
+
+  const sent = await qq.postQQMessage(
+    event.channel.id,
+    `[主动唤醒测试] ${new Date().toISOString()}`,
+    { isWakeup: true },
+  );
+  console.log("[qq:wakeup] sent", {
+    asyncCode: sent.raw._chat_async_code,
+    asyncMessage: sent.raw._chat_async_message,
+    deliveryStatus: sent.raw._chat_delivery_status,
+    httpStatus: sent.raw._chat_http_status,
+    messageId: sent.id,
+  });
+});
+
+testBot.onSlashCommand("/reference", async (event) => {
+  const messageId = event.text.trim() || event.triggerId;
+  if (!messageId) {
+    await event.channel.post("用法：/reference <message_id>；当前事件没有可用 triggerId。");
+    return;
+  }
+
+  const sent = await qq.postQQMessage(
+    event.channel.id,
+    `QQ message_reference test: ${new Date().toISOString()}`,
+    {
+      messageReference: {
+        ignore_get_message_error: false,
+        message_id: messageId,
+      },
+      passiveContext: false,
+    },
+  );
+  console.log("[qq:reference] sent", {
+    messageId: sent.id,
+    referencedMessageId: messageId,
+  });
 });
 
 testBot.onSlashCommand("/mention", async (event) => {
@@ -350,6 +427,54 @@ async function postImagesTest(thread: QQTestTarget): Promise<void> {
     ],
     raw: "",
   });
+}
+
+async function postFileTest(thread: QQTestTarget): Promise<void> {
+  const timestamp = new Date().toISOString();
+  await thread.post({
+    files: [
+      {
+        data: Buffer.from([
+          "@amatsuka/chat-adapter-qq file upload test",
+          `threadId: ${thread.id}`,
+          `timestamp: ${timestamp}`,
+          "",
+        ].join("\n")),
+        filename: "qq-chat-sdk-file-test.txt",
+        mimeType: "text/plain; charset=utf-8",
+      },
+    ],
+    raw: `QQ Chat SDK files test: ${timestamp}`,
+  });
+}
+
+async function postChartTest(thread: QQTestTarget): Promise<void> {
+  await thread.post(Card({
+    children: [
+      CardText("Chat SDK 4.34 Table caption + Chart fallback test"),
+      Table({
+        caption: "QQ adapter capability status",
+        headers: ["Capability", "Status"],
+        rows: [
+          ["Chat SDK files", "supported"],
+          ["Group files", "supported"],
+          ["Chart fallback", "supported"],
+        ],
+      }),
+      Chart({
+        title: "QQ adapter test coverage",
+        chart: {
+          segments: [
+            { label: "Protocol", value: 60 },
+            { label: "Rich media", value: 25 },
+            { label: "Gateway", value: 15 },
+          ],
+          type: "pie",
+        },
+      }),
+    ],
+    title: "QQ Rich Card Test",
+  }));
 }
 
 async function postJsxImageTest(thread: QQTestTarget): Promise<void> {

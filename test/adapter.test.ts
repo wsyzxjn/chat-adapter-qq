@@ -1,5 +1,5 @@
 import type { ChatInstance, Logger } from "chat";
-import { Actions, Button, Card, CardLink, CardText, Divider, Field, Fields, Image, LinkButton, Section, Table } from "chat";
+import { Actions, Button, Card, CardLink, CardText, Chart, Divider, Field, Fields, Image, LinkButton, Section, Table } from "chat";
 import { QQAdapter, isQQMentioned } from "@amatsuka/chat-adapter-qq";
 import type { QQRawMessage, QQSocketModeAdapterConfig, QQWebhookAdapterConfig } from "@amatsuka/chat-adapter-qq";
 import { describe, it, afterEach, mock } from "node:test";
@@ -128,8 +128,8 @@ class MockSocketModeSocket {
     this.listeners.set(type, listeners);
   }
 
-  close(): void {
-    this.emit("close", new Event("close"));
+  close(code = 1000, reason = ""): void {
+    this.emitClose(code, reason);
   }
 
   send(data: string): void {
@@ -140,6 +140,10 @@ class MockSocketModeSocket {
     for (const listener of this.listeners.get(type) ?? []) {
       listener(event);
     }
+  }
+
+  emitClose(code: number, reason = ""): void {
+    this.emit("close", { code, reason } as CloseEvent);
   }
 }
 
@@ -902,6 +906,61 @@ describe("QQAdapter interaction events", () => {
       value: "order-123",
     });
   });
+
+  it("dispatches quick-menu interactions using feature_id", async () => {
+    const adapter = createAdapter({ acknowledgeInteractions: false });
+    const processAction = await initializeWithProcessActionSpy(adapter);
+
+    await adapter.handleWebhook(new Request("https://example.test/webhooks/qq", {
+      body: JSON.stringify({
+        d: {
+          chat_type: 2,
+          data: {
+            resolved: {
+              feature_id: "quick-menu-weather",
+              message_id: "message-quick-menu",
+              user_id: "user-openid",
+            },
+            type: 12,
+          },
+          id: "interaction-quick-menu",
+        },
+        id: "event-quick-menu",
+        op: 0,
+        t: "INTERACTION_CREATE",
+      }),
+      headers: { "X-Bot-Appid": APP_ID },
+      method: "POST",
+    }));
+
+    assert.strictEqual(processAction.mock.callCount(), 1);
+    assertMatchObject(processAction.mock.calls[0]?.arguments[0], {
+      actionId: "quick-menu-weather",
+      messageId: "message-quick-menu",
+      threadId: "qq:c2c/user-openid",
+    });
+  });
+
+  it("does not misclassify guild interactions as C2C", async () => {
+    const adapter = createAdapter({ acknowledgeInteractions: false });
+    const processAction = await initializeWithProcessActionSpy(adapter);
+
+    await adapter.handleWebhook(new Request("https://example.test/webhooks/qq", {
+      body: JSON.stringify({
+        d: {
+          chat_type: 0,
+          data: { resolved: { button_id: "guild-action", user_id: "guild-user" } },
+          id: "guild-interaction",
+          scene: "guild",
+        },
+        op: 0,
+        t: "INTERACTION_CREATE",
+      }),
+      method: "POST",
+    }));
+
+    assert.strictEqual(processAction.mock.callCount(), 0);
+  });
 });
 
 describe("QQAdapter outbound rich messages", () => {
@@ -1119,6 +1178,48 @@ describe("QQAdapter outbound rich messages", () => {
     });
   });
 
+  it("uploads Chat SDK files as QQ group file media", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({ access_token: "access-token", expires_in: 7200 });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/groups/group-openid/files") {
+        return Response.json({ file_info: "group-file-info" });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/groups/group-openid/messages") {
+        return Response.json({ id: "group-file-message" });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.postMessage("qq:group/group-openid", {
+      files: [
+        {
+          data: new TextEncoder().encode("report").buffer,
+          filename: "report.pdf",
+          mimeType: "application/pdf",
+        },
+      ],
+      raw: "monthly report",
+    });
+
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
+      file_data: Buffer.from("report").toString("base64"),
+      file_type: 4,
+      srv_send_msg: false,
+    });
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[2]?.arguments[1]?.body ?? "")), {
+      content: "monthly report",
+      media: { file_info: "group-file-info" },
+      msg_type: 7,
+    });
+  });
+
   it("reuses cached QQ media payloads until ttl expires", async () => {
     const adapter = createAdapter({
       tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
@@ -1326,6 +1427,7 @@ describe("QQAdapter outbound rich messages", () => {
               value: "order-123",
             }),
             LinkButton({
+              id: "docs",
               label: "Docs",
               url: "https://example.com/docs",
             }),
@@ -1359,12 +1461,14 @@ describe("QQAdapter outbound rich messages", () => {
                   },
                 },
                 {
+                  id: "docs",
                   action: {
                     data: "https://example.com/docs",
                     permission: {
                       type: 2,
                     },
                     type: 0,
+                    unsupport_tips: "Docs",
                   },
                   render_data: {
                     label: "Docs",
@@ -1387,6 +1491,50 @@ describe("QQAdapter outbound rich messages", () => {
       (body.markdown as { content: string }).content.includes("Choose an action"),
       'markdown.content includes "Choose an action"',
     );
+  });
+
+  it("renders Chat SDK 4.34 table captions and charts as QQ markdown fallbacks", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({ access_token: "access-token", expires_in: 7200 });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        return Response.json({ id: "sent-message-1" });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.postMessage("qq:c2c/user-openid", Card({
+      children: [
+        Table({
+          caption: "Monthly totals",
+          headers: ["Month", "Value"],
+          rows: [["May", "42"]],
+        }),
+        Chart({
+          title: "Distribution",
+          chart: {
+            segments: [
+              { label: "QQ", value: 70 },
+              { label: "Other", value: 30 },
+            ],
+            type: "pie",
+          },
+        }),
+      ],
+    }));
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? ""));
+    const markdown = body.markdown.content as string;
+    assert.match(markdown, /Monthly totals/);
+    assert.match(markdown, /\| Month \| Value \|/);
+    assert.match(markdown, /Distribution/);
+    assert.match(markdown, /QQ\s+\| 70/);
   });
 
   it("maps Chat SDK JSX URL card images and content to QQ markdown", async () => {
@@ -1536,6 +1684,19 @@ describe("QQAdapter outbound rich messages", () => {
       return Response.json({ code: 404 }, { status: 404 });
     });
     globalThis.fetch = fetchMock as typeof globalThis.fetch;
+    await initializeWithProcessSpy(adapter);
+    await adapter.handleSocketModePayload({
+      d: {
+        author: { user_openid: "user-openid" },
+        content: "start stream",
+        id: "message-stream",
+        timestamp: "2026-05-09T12:00:00+08:00",
+      },
+      id: "event-stream",
+      op: 0,
+      s: 1,
+      t: "C2C_MESSAGE_CREATE",
+    });
 
     async function* chunks() {
       yield "hello ";
@@ -1564,6 +1725,9 @@ describe("QQAdapter outbound rich messages", () => {
     assert.strictEqual(firstBody.content_type, "markdown");
     assert.strictEqual(firstBody.index, 0);
     assert.strictEqual(firstBody.stream_msg_id, undefined);
+    assert.strictEqual(firstBody.event_id, "event-stream");
+    assert.strictEqual(firstBody.msg_id, "message-stream");
+    assert.strictEqual(firstBody.msg_seq, 2);
 
     // Final call.
     const lastBody = JSON.parse(String(streamCalls[streamCalls.length - 1]?.arguments[1]?.body ?? ""));
@@ -1572,6 +1736,7 @@ describe("QQAdapter outbound rich messages", () => {
     assert.strictEqual(lastBody.content_type, "markdown");
     assert.strictEqual(lastBody.content_raw, "hello **world**");
     assert.strictEqual(lastBody.stream_msg_id, "stream-msg-1");
+    assert.strictEqual(lastBody.msg_seq, 2);
   });
 
   it("falls back to regular message when stream_messages API fails in C2C", async () => {
@@ -1596,9 +1761,23 @@ describe("QQAdapter outbound rich messages", () => {
       return Response.json({ code: 404 }, { status: 404 });
     });
     globalThis.fetch = fetchMock as typeof globalThis.fetch;
+    await initializeWithProcessSpy(adapter);
+    await adapter.handleSocketModePayload({
+      d: {
+        author: { user_openid: "user-openid" },
+        content: "start stream",
+        id: "message-stream",
+        timestamp: "2026-05-09T12:00:00+08:00",
+      },
+      id: "event-stream",
+      op: 0,
+      s: 1,
+      t: "C2C_MESSAGE_CREATE",
+    });
 
     async function* chunks() {
       yield "hello ";
+      await new Promise((r) => setTimeout(r, 600));
       yield {
         text: "**world**",
         type: "markdown_text" as const,
@@ -1607,17 +1786,21 @@ describe("QQAdapter outbound rich messages", () => {
 
     await adapter.stream("qq:c2c/user-openid", chunks());
 
-    // Token + startTyping + fallback message.
-    assert.strictEqual(fetchMock.mock.callCount(), 3);
+    // Token + startTyping + failed stream_messages + fallback message.
+    assert.strictEqual(fetchMock.mock.callCount(), 4);
     assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
       input_notify: {
         input_second: 60,
         input_type: 1,
       },
+      msg_id: "message-stream",
+      msg_seq: 1,
       msg_type: 6,
     });
-    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[2]?.arguments[1]?.body ?? "")), {
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[3]?.arguments[1]?.body ?? "")), {
       content: "hello **world**",
+      msg_id: "message-stream",
+      msg_seq: 3,
       msg_type: 0,
     });
   });
@@ -1835,6 +2018,143 @@ describe("QQAdapter outbound passive context", () => {
   });
 });
 
+describe("QQAdapter latest QQ and Chat SDK protocol behavior", () => {
+  it("enables Chat SDK state-backed thread history", () => {
+    assert.strictEqual(createAdapter().persistThreadHistory, true);
+  });
+
+  it("returns accepted raw messages for QQ 202 asynchronous sends", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    globalThis.fetch = mock.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({ access_token: "access-token", expires_in: 7200 });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        return Response.json({
+          audit_id: "audit-1",
+          code: 304023,
+          message: "accepted for asynchronous audit",
+        }, { status: 202 });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    }) as typeof globalThis.fetch;
+
+    const sent = await adapter.postMessage("qq:c2c/user-openid", "proactive");
+
+    assert.strictEqual(sent.id, "qq:pending/audit-1");
+    assertMatchObject(sent.raw, {
+      _chat_async_code: 304023,
+      _chat_async_message: "accepted for asynchronous audit",
+      _chat_delivery_status: "accepted",
+      _chat_http_status: 202,
+    });
+  });
+
+  it("maps QQ business-code rate limits and Retry-After", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    globalThis.fetch = mock.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({ access_token: "access-token", expires_in: 7200 });
+      }
+      return Response.json({ code: 304045, message: "rate limited" }, {
+        headers: { "Retry-After": "2" },
+        status: 200,
+      });
+    }) as typeof globalThis.fetch;
+
+    await assert.rejects(
+      adapter.postMessage("qq:c2c/user-openid", "hello"),
+      (error: unknown) => {
+        assertMatchObject(error, { code: "RATE_LIMITED", retryAfterMs: 2000 });
+        return true;
+      },
+    );
+  });
+
+  it("supports QQ-specific wake-up and message-reference send options", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    await initializeWithProcessSpy(adapter);
+    await adapter.handleSocketModePayload({
+      d: {
+        author: { user_openid: "user-openid" },
+        content: "hello",
+        id: "incoming-message",
+      },
+      id: "incoming-event",
+      op: 0,
+      t: "C2C_MESSAGE_CREATE",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({ access_token: "access-token", expires_in: 7200 });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        return Response.json({ id: "sent-wakeup" });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.postQQMessage("qq:c2c/user-openid", "wake up", {
+      isWakeup: true,
+      messageReference: {
+        ignore_get_message_error: true,
+        message_id: "referenced-message",
+      },
+    });
+
+    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
+      content: "wake up",
+      is_wakeup: true,
+      message_reference: {
+        ignore_get_message_error: true,
+        message_id: "referenced-message",
+      },
+      msg_type: 0,
+    });
+    await assert.rejects(
+      adapter.postQQMessage("qq:c2c/user-openid", "invalid", {
+        isWakeup: true,
+        passiveContext: true,
+      }),
+      /cannot be combined with passive reply context/,
+    );
+  });
+
+  it("dispatches asynchronous message audit events", async () => {
+    const adapter = createAdapter();
+    const handler = mock.fn();
+    adapter.onEvent("MESSAGE_AUDIT_PASS", handler);
+
+    await adapter.handleSocketModePayload({
+      d: {
+        audit_id: "audit-1",
+        message_id: "message-1",
+        user_openid: "user-openid",
+      },
+      id: "audit-event",
+      op: 0,
+      t: "MESSAGE_AUDIT_PASS",
+    });
+
+    assert.strictEqual(handler.mock.callCount(), 1);
+    assertMatchObject(handler.mock.calls[0]?.arguments[0], {
+      eventId: "audit-event",
+      threadId: "qq:c2c/user-openid",
+      type: "MESSAGE_AUDIT_PASS",
+    });
+  });
+});
+
 describe("QQAdapter socket mode", () => {
   it("dispatches QQ socket mode message events through Chat SDK", async () => {
     const adapter = createAdapter();
@@ -1913,10 +2233,6 @@ describe("QQAdapter socket mode", () => {
 
     assert.deepStrictEqual(sockets[0]!.sent.map((payload) => JSON.parse(payload)), [
       {
-        d: null,
-        op: 1,
-      },
-      {
         d: {
           intents: (1 << 25) | (1 << 26),
           properties: {
@@ -1929,8 +2245,185 @@ describe("QQAdapter socket mode", () => {
         },
         op: 2,
       },
+      {
+        d: null,
+        op: 1,
+      },
     ]);
 
+    await adapter.stopSocketMode();
+  });
+
+  it("automatically starts every recommended gateway shard", async () => {
+    const sockets: MockSocketModeSocket[] = [];
+    const adapter = createAdapter({
+      mode: "socket",
+      socketMode: {
+        reconnect: false,
+        webSocketFactory: () => {
+          const socket = new MockSocketModeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      },
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    globalThis.fetch = mock.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({ access_token: "access-token", expires_in: 7200 });
+      }
+      if (url === "https://api.sgroup.qq.com/gateway/bot") {
+        return Response.json({
+          session_start_limit: { max_concurrency: 2, remaining: 10, reset_after: 60_000, total: 10 },
+          shards: 2,
+          url: "wss://gateway.example.test/websocket",
+        });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    }) as typeof globalThis.fetch;
+
+    const start = adapter.startSocketMode();
+    await nextTick();
+    assert.strictEqual(sockets.length, 2);
+    sockets.forEach((socket) => socket.emit("open", new Event("open")));
+    await start;
+    sockets.forEach((socket) => socket.emit("message", {
+      data: JSON.stringify({ d: { heartbeat_interval: 60_000 }, op: 10 }),
+    } as MessageEvent));
+    await nextTick();
+
+    const identifyShards = sockets.map((socket) => {
+      const identify = socket.sent.map((payload) => JSON.parse(payload)).find((payload) => payload.op === 2);
+      return identify.d.shard;
+    });
+    assert.deepStrictEqual(identifyShards, [[0, 2], [1, 2]]);
+    await adapter.stopSocketMode();
+  });
+
+  it("rejects auto-sharding when the gateway start quota is insufficient", async () => {
+    const adapter = createAdapter({
+      mode: "socket",
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    globalThis.fetch = mock.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({ access_token: "access-token", expires_in: 7200 });
+      }
+      return Response.json({
+        session_start_limit: { max_concurrency: 1, remaining: 1, reset_after: 12_345, total: 10 },
+        shards: 2,
+        url: "wss://gateway.example.test/websocket",
+      });
+    }) as typeof globalThis.fetch;
+
+    await assert.rejects(adapter.startSocketMode(), (error: unknown) => {
+      assertMatchObject(error, { code: "RATE_LIMITED", retryAfterMs: 12_345 });
+      return true;
+    });
+  });
+
+  it("resumes the previous gateway session after close code 4009", async () => {
+    const sockets: MockSocketModeSocket[] = [];
+    const adapter = createAdapter({
+      mode: "socket",
+      socketMode: {
+        autoSharding: false,
+        reconnectDelayMs: 0,
+        url: "wss://gateway.example.test/websocket",
+        webSocketFactory: () => {
+          const socket = new MockSocketModeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      },
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    globalThis.fetch = mock.fn(async () => Response.json({
+      access_token: "access-token",
+      expires_in: 7200,
+    })) as typeof globalThis.fetch;
+
+    const start = adapter.startSocketMode();
+    await nextTick();
+    sockets[0]!.emit("open", new Event("open"));
+    await start;
+    sockets[0]!.emit("message", {
+      data: JSON.stringify({ d: { heartbeat_interval: 60_000 }, op: 10 }),
+    } as MessageEvent);
+    await nextTick();
+    sockets[0]!.emit("message", {
+      data: JSON.stringify({ d: { session_id: "session-resume" }, op: 0, s: 42, t: "READY" }),
+    } as MessageEvent);
+    await nextTick();
+
+    sockets[0]!.emitClose(4009, "session reconnect");
+    await nextTick();
+    sockets[1]!.emit("open", new Event("open"));
+    sockets[1]!.emit("message", {
+      data: JSON.stringify({ d: { heartbeat_interval: 60_000 }, op: 10 }),
+    } as MessageEvent);
+    await nextTick();
+
+    assertMatchObject(JSON.parse(sockets[1]!.sent[0]!), {
+      d: {
+        seq: 42,
+        session_id: "session-resume",
+        token: "QQBot access-token",
+      },
+      op: 6,
+    });
+    await adapter.stopSocketMode();
+  });
+
+  it("re-identifies after invalid-session close codes and stops on terminal close codes", async () => {
+    const sockets: MockSocketModeSocket[] = [];
+    const adapter = createAdapter({
+      mode: "socket",
+      socketMode: {
+        autoSharding: false,
+        reconnectDelayMs: 0,
+        url: "wss://gateway.example.test/websocket",
+        webSocketFactory: () => {
+          const socket = new MockSocketModeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      },
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    globalThis.fetch = mock.fn(async () => Response.json({
+      access_token: "access-token",
+      expires_in: 7200,
+    })) as typeof globalThis.fetch;
+
+    const start = adapter.startSocketMode();
+    await nextTick();
+    sockets[0]!.emit("open", new Event("open"));
+    await start;
+    sockets[0]!.emit("message", {
+      data: JSON.stringify({ d: { heartbeat_interval: 60_000 }, op: 10 }),
+    } as MessageEvent);
+    await nextTick();
+    sockets[0]!.emit("message", {
+      data: JSON.stringify({ d: { session_id: "session-1" }, op: 0, s: 7, t: "READY" }),
+    } as MessageEvent);
+    await nextTick();
+
+    sockets[0]!.emitClose(4006, "invalid session");
+    await nextTick();
+    assert.strictEqual(sockets.length, 2);
+    sockets[1]!.emit("open", new Event("open"));
+    sockets[1]!.emit("message", {
+      data: JSON.stringify({ d: { heartbeat_interval: 60_000 }, op: 10 }),
+    } as MessageEvent);
+    await nextTick();
+    assert.strictEqual(JSON.parse(sockets[1]!.sent[0]!).op, 2);
+
+    sockets[1]!.emitClose(4915, "bot unavailable");
+    await nextTick();
+    assert.strictEqual(sockets.length, 2);
     await adapter.stopSocketMode();
   });
 });

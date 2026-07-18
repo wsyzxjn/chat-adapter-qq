@@ -77,8 +77,14 @@ console.log("[c2c-proactive] sending proactive C2C message", {
 });
 
 try {
-  const sent = await qq.postMessage(threadId, message);
+  const sent = await qq.postQQMessage(threadId, message, {
+    isWakeup: true,
+  });
   console.log("[c2c-proactive] success", {
+    asyncCode: sent.raw._chat_async_code,
+    asyncMessage: sent.raw._chat_async_message,
+    deliveryStatus: sent.raw._chat_delivery_status,
+    httpStatus: sent.raw._chat_http_status,
     messageId: sent.id,
     threadId: sent.threadId,
   });

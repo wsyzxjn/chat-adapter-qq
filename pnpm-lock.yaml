@@ -9,12 +9,12 @@ importers:
   .:
     dependencies:
       chat:
-        specifier: ^4.28.1
-        version: 4.28.1
+        specifier: ^4.34.0
+        version: 4.34.0
     devDependencies:
       '@chat-adapter/state-memory':
-        specifier: ^4.28.1
-        version: 4.28.1
+        specifier: ^4.34.0
+        version: 4.34.0
       '@types/node':
         specifier: ^25.6.2
         version: 25.6.2
@@ -53,8 +53,9 @@ packages:
     resolution: {integrity: sha512-JeSVu/m8x/zpp4CLjYHVNXuhEyOkhPXuxM8YOXjh6L4LlvQNKuUNOTo5KdBuKAcTDHw8DquToTaEkhsBqPXOaA==}
     engines: {node: ^22.18.0 || >=24.11.0}
 
-  '@chat-adapter/state-memory@4.28.1':
-    resolution: {integrity: sha512-KMKrPPU9inr+GVH5pIL81aSW0+LXulxZMktSzf5JOgE6C8WHmUAcGN9B0C80edyeC5qeXOyl0Vl3ZecPZsWDqQ==}
+  '@chat-adapter/state-memory@4.34.0':
+    resolution: {integrity: sha512-voZQK+bAz6RLwUDb582f+Wub5aChp6eVqtHAGjf1gAYFUKcIy54k0JA540jG1ZHLym6m0kIH5FjVXDCDb5DLng==}
+    engines: {node: '>=20'}
 
   '@emnapi/core@1.10.0':
     resolution: {integrity: sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==}
@@ -239,8 +240,17 @@ packages:
   character-entities@2.0.2:
     resolution: {integrity: sha512-shx7oQ0Awen/BRIdkjkvz54PnEEI/EjwXDSIZp86/KKdbafHh1Df/RYGBhn4hbe2+uKC9FnT5UCEdyPz3ai9hQ==}
 
-  chat@4.28.1:
-    resolution: {integrity: sha512-oKBeLQ746rSmHWGoXmPgDOqMVdIe9cWFQBQ1G2pw0l2vV4sAsZgfEJmc1UYqSJR4kYy4PxKgRFy31pe4RJ644Q==}
+  chat@4.34.0:
+    resolution: {integrity: sha512-g3c9ANavtCX7BwHcB5c3lWKIUm+8Oo7qlbgQ7/ni1rmVLLeCQa7FiMfeIyEyTAd/4HlRQu5jcS4EPdb0VyhUDQ==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      ai: ^6.0.182 || ^7.0.0
+      zod: ^3.0.0 || ^4.0.0
+    peerDependenciesMeta:
+      ai:
+        optional: true
+      zod:
+        optional: true
 
   debug@4.4.3:
     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
@@ -614,11 +624,13 @@ snapshots:
       '@babel/helper-string-parser': 8.0.0-rc.5
       '@babel/helper-validator-identifier': 8.0.0-rc.5
 
-  '@chat-adapter/state-memory@4.28.1':
+  '@chat-adapter/state-memory@4.34.0':
     dependencies:
-      chat: 4.28.1
+      chat: 4.34.0
     transitivePeerDependencies:
+      - ai
       - supports-color
+      - zod
 
   '@emnapi/core@1.10.0':
     dependencies:
@@ -759,7 +771,7 @@ snapshots:
 
   character-entities@2.0.2: {}
 
-  chat@4.28.1:
+  chat@4.34.0:
     dependencies:
       '@workflow/serde': 4.1.0-beta.2
       mdast-util-to-string: 4.0.0

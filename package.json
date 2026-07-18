@@ -3,6 +3,7 @@
   "version": "0.1.12",
   "description": "QQ adapter for chat",
   "type": "module",
+  "types": "./dist/index.d.mts",
   "exports": {
     ".": "./dist/index.mjs",
     "./package.json": "./package.json"
@@ -23,10 +24,10 @@
     "typecheck": "tsc && tsc -p test/tsconfig.json"
   },
   "peerDependencies": {
-    "chat": "^4.28.1"
+    "chat": "^4.34.0"
   },
   "devDependencies": {
-    "@chat-adapter/state-memory": "^4.28.1",
+    "@chat-adapter/state-memory": "^4.34.0",
     "@types/node": "^25.6.2",
     "tsdown": "^0.22.0",
     "typescript": "^6.0.3"
@@ -42,8 +43,13 @@
   "publishConfig": {
     "access": "public"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "keywords": [
     "chat",
+    "chat-sdk",
+    "chat-adapter",
     "qq",
     "bot",
     "adapter"

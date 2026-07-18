@@ -41,7 +41,9 @@ export class QQGatewayClient {
   private readonly logger: Logger;
   private readonly onDispatch: (payload: QQWebhookPayload<unknown>) => Promise<void>;
   private readonly options: QQSocketModeOptions;
+  private heartbeatAcknowledged = true;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private sequence: number | null = null;
   private sessionId: string | null = null;
@@ -114,13 +116,30 @@ export class QQGatewayClient {
         this.logger.warn("QQ gateway socket error", event);
         settle(() => reject(new Error("QQ gateway socket error.")));
       });
-      socket.addEventListener("close", () => {
-        this.logger.info("QQ gateway closed");
+      socket.addEventListener("close", (event) => {
+        this.logger.info("QQ gateway closed", { code: event.code, reason: event.reason });
         this.clearHeartbeat();
         if (this.socket === socket) {
           this.socket = null;
         }
-        if (!this.stopped && this.options.reconnect !== false) {
+        if (this.stopped || this.options.reconnect === false) {
+          return;
+        }
+
+        const policy = this.getClosePolicy(event.code);
+        if (policy === "stop") {
+          this.stopped = true;
+          this.logger.error("QQ gateway closed with a terminal configuration/authentication code", {
+            code: event.code,
+            reason: event.reason,
+          });
+          return;
+        }
+        if (policy === "identify") {
+          this.sessionId = null;
+          this.sequence = null;
+        }
+        if (!this.reconnectTimer) {
           this.scheduleReconnect();
         }
       });
@@ -153,13 +172,19 @@ export class QQGatewayClient {
 
     switch (payload.op) {
       case GATEWAY_HELLO_OPCODE:
-        this.handleHello(payload.d);
-        await this.identifyOrResume();
+        {
+          const heartbeatInterval = this.parseHeartbeatInterval(payload.d);
+          await this.identifyOrResume();
+          if (heartbeatInterval !== null) {
+            this.startHeartbeat(heartbeatInterval);
+          }
+        }
         return;
       case GATEWAY_HEARTBEAT_OPCODE:
         this.sendHeartbeat();
         return;
       case GATEWAY_HEARTBEAT_ACK_OPCODE:
+        this.heartbeatAcknowledged = true;
         this.logger.debug("QQ gateway heartbeat acknowledged", { seq: this.sequence });
         return;
       case GATEWAY_RECONNECT_OPCODE:
@@ -181,16 +206,26 @@ export class QQGatewayClient {
     }
   }
 
-  private handleHello(data: unknown): void {
+  private parseHeartbeatInterval(data: unknown): number | null {
     const hello = data as QQGatewayHelloData | undefined;
     const interval = Number(hello?.heartbeat_interval);
     if (!Number.isFinite(interval) || interval <= 0) {
       this.logger.warn("QQ gateway hello missing heartbeat interval", data);
-      return;
+      return null;
     }
 
+    return interval;
+  }
+
+  private startHeartbeat(interval: number): void {
     this.clearHeartbeat();
+    this.heartbeatAcknowledged = true;
     this.heartbeatTimer = setInterval(() => {
+      if (!this.heartbeatAcknowledged) {
+        this.logger.warn("QQ gateway heartbeat ACK timed out; reconnecting", { seq: this.sequence });
+        this.reconnect();
+        return;
+      }
       this.sendHeartbeat();
     }, interval);
     this.sendHeartbeat();
@@ -204,6 +239,7 @@ export class QQGatewayClient {
     const ready = payload.d as QQGatewayReadyData | undefined;
     if (ready?.session_id) {
       this.sessionId = ready.session_id;
+      this.reconnectAttempts = 0;
       this.logger.info("QQ gateway session ready", {
         sessionId: this.sessionId,
         seq: this.sequence,
@@ -253,7 +289,11 @@ export class QQGatewayClient {
       return;
     }
 
-    const delay = this.options.reconnectDelayMs ?? 1000;
+    const initialDelay = Math.max(0, this.options.reconnectDelayMs ?? 1000);
+    const maxDelay = Math.max(initialDelay, this.options.maxReconnectDelayMs ?? 30_000);
+    const delay = Math.min(maxDelay, initialDelay * 2 ** this.reconnectAttempts);
+    this.reconnectAttempts += 1;
+    this.logger.info("QQ gateway reconnect scheduled", { attempt: this.reconnectAttempts, delay });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.stopped) {
@@ -269,6 +309,7 @@ export class QQGatewayClient {
   }
 
   private sendHeartbeat(): void {
+    this.heartbeatAcknowledged = false;
     this.sendPayload({
       d: this.sequence,
       op: GATEWAY_HEARTBEAT_OPCODE,
@@ -305,5 +346,18 @@ export class QQGatewayClient {
       throw new Error("QQ gateway requires a WebSocket implementation.");
     }
     return (url) => new WebSocket(url);
+  }
+
+  private getClosePolicy(code: number): "identify" | "resume" | "stop" {
+    // Invalid session/sequence: the next connection must start a new session.
+    if (code === 4006 || code === 4007) {
+      return "identify";
+    }
+    // Authentication, sharding, version and intent configuration failures are not recoverable by reconnecting.
+    if ([4004, 4010, 4011, 4012, 4013, 4014, 4914, 4915].includes(code)) {
+      return "stop";
+    }
+    // 4009 and network/server closes retain the latest session for opcode 6 Resume.
+    return "resume";
   }
 }

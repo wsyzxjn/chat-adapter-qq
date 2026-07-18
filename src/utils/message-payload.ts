@@ -3,6 +3,7 @@ import type {
   Attachment,
   CardChild,
   CardElement,
+  FileUpload,
   Message,
   PostableAst,
   PostableCard,
@@ -10,7 +11,15 @@ import type {
   PostableRaw,
   StreamChunk,
 } from "chat";
-import { ChatError, NotImplementedError, isCardElement, parseMarkdown, stringifyMarkdown, walkAst } from "chat";
+import {
+  ChatError,
+  NotImplementedError,
+  chartElementToFallbackText,
+  isCardElement,
+  parseMarkdown,
+  stringifyMarkdown,
+  walkAst,
+} from "chat";
 import { QQFormatConverter } from "../format-converter.js";
 import type {
   QQKeyboardButton,
@@ -175,17 +184,7 @@ export function validateMessagePayload(message: AdapterPostableMessage): void {
     return;
   }
 
-  if ("files" in message && Array.isArray(message.files) && message.files.length > 0) {
-    throw new NotImplementedError(
-      "QQ API v2 user/group messaging currently accepts URL-based media workflows. Direct file upload is not implemented in this adapter.",
-      "files",
-    );
-  }
-
   const attachments = getPostableAttachments(message);
-  if (attachments.length > 1 && attachments.some((attachment) => attachment.type !== "image")) {
-    throw new NotImplementedError("QQ adapter supports multiple outbound attachments only for images.", "attachments");
-  }
   if (attachments.some((attachment) => !hasAttachmentSource(attachment))) {
     throw new NotImplementedError(
       "QQ media messages require URL-based or binary attachment data.",
@@ -203,8 +202,72 @@ export function getPostableAttachments(message: AdapterPostableMessage): Attachm
     return [];
   }
   const attachments = "attachments" in message && Array.isArray(message.attachments) ? message.attachments : [];
+  const files = "files" in message && Array.isArray(message.files)
+    ? message.files.map(fileUploadToAttachment)
+    : [];
   const card = extractCard(message);
-  return card ? [...attachments, ...extractCardMediaAttachments(card)] : attachments;
+  return card
+    ? [...attachments, ...files, ...extractCardMediaAttachments(card)]
+    : [...attachments, ...files];
+}
+
+function fileUploadToAttachment(file: FileUpload): Attachment {
+  const mimeType = file.mimeType ?? inferMimeType(file.filename);
+  const data = file.data instanceof ArrayBuffer
+    ? new Blob([file.data], mimeType ? { type: mimeType } : undefined)
+    : file.data;
+  return {
+    data,
+    ...(mimeType ? { mimeType } : {}),
+    name: file.filename,
+    type: inferAttachmentType(mimeType, file.filename),
+  };
+}
+
+function inferAttachmentType(
+  mimeType: string | undefined,
+  filename: string,
+): Attachment["type"] {
+  if (mimeType?.startsWith("image/")) {
+    return "image";
+  }
+  if (mimeType?.startsWith("video/")) {
+    return "video";
+  }
+  if (mimeType?.startsWith("audio/") || mimeType === "voice") {
+    return "audio";
+  }
+
+  const extension = filename.split(".").pop()?.toLowerCase();
+  if (["apng", "avif", "bmp", "gif", "heic", "jpeg", "jpg", "png", "svg", "webp"].includes(extension ?? "")) {
+    return "image";
+  }
+  if (["avi", "m4v", "mkv", "mov", "mp4", "webm"].includes(extension ?? "")) {
+    return "video";
+  }
+  if (["aac", "flac", "m4a", "mp3", "ogg", "opus", "silk", "wav"].includes(extension ?? "")) {
+    return "audio";
+  }
+  return "file";
+}
+
+function inferMimeType(filename: string): string | undefined {
+  const extension = filename.split(".").pop()?.toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    gif: "image/gif",
+    jpeg: "image/jpeg",
+    jpg: "image/jpeg",
+    png: "image/png",
+    webp: "image/webp",
+    m4a: "audio/mp4",
+    mp3: "audio/mpeg",
+    ogg: "audio/ogg",
+    wav: "audio/wav",
+    mov: "video/quicktime",
+    mp4: "video/mp4",
+    webm: "video/webm",
+  };
+  return extension ? mimeTypes[extension] : undefined;
 }
 
 export function toQQMediaFileType(thread: QQThreadId, attachment: Attachment): number {
@@ -216,9 +279,6 @@ export function toQQMediaFileType(thread: QQThreadId, attachment: Attachment): n
     case "audio":
       return 3;
     case "file":
-      if (thread.type === "group") {
-        throw new NotImplementedError("QQ group media messages do not support file attachments yet.", "attachments");
-      }
       return 4;
     default:
       return assertNever(attachment.type);
@@ -337,7 +397,9 @@ function renderCardChildMarkdown(child: CardChild): string | null {
     case "section":
       return child.children.map(renderCardChildMarkdown).filter(Boolean).join("\n");
     case "table":
-      return renderMarkdownTable(child.headers, child.rows);
+      return [child.caption, renderMarkdownTable(child.headers, child.rows)].filter(Boolean).join("\n\n");
+    case "chart":
+      return chartElementToFallbackText(child);
     case "text":
       return renderTextElement(child.content, child.style);
     default:
@@ -476,7 +538,7 @@ function extractKeyboardButtons(card: CardElement): QQKeyboardButton[] {
           continue;
         }
         if (action.type === "link-button") {
-          output.push(toQQLinkButton(action.label, action.url, action.style));
+          output.push(toQQLinkButton(action.label, action.url, action.style, action.id));
           continue;
         }
 
@@ -517,6 +579,7 @@ function toQQLinkButton(
   label: string,
   url: string,
   style: QQKeyboardButton["render_data"]["style"] | "primary" | "danger" | "default" | undefined,
+  actionId?: string,
 ): QQKeyboardButton {
   return {
     action: {
@@ -525,7 +588,9 @@ function toQQLinkButton(
         type: 2,
       },
       type: 0,
+      unsupport_tips: label,
     },
+    ...(actionId ? { id: actionId } : {}),
     render_data: {
       label,
       style: toQQButtonStyle(style),
