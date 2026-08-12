@@ -1,9 +1,10 @@
 import type { ChatInstance, Logger } from "chat";
 import { Actions, Button, Card, CardLink, CardText, Chart, Divider, Field, Fields, Image, LinkButton, Section, Table } from "chat";
-import { QQAdapter, isQQMentioned } from "@amatsuka/chat-adapter-qq";
+import { QQAdapter, isQQMentioned, DEFAULT_GATEWAY_INTENTS, DEFAULT_TOKEN_ENDPOINT, BOT_TOKEN_ENDPOINT, BOT_API_BASE_URL } from "@amatsuka/chat-adapter-qq";
 import type { QQRawMessage, QQSocketModeAdapterConfig, QQWebhookAdapterConfig } from "@amatsuka/chat-adapter-qq";
 import { describe, it, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 
 const APP_ID = "11111111";
 const BOT_SECRET = "DG5g3B4j9X2KOErG";
@@ -165,6 +166,48 @@ function assertMatchObject(actual: unknown, expected: Record<string, unknown>, p
       assert.deepStrictEqual(actualValue, expectedValue, currentPath);
     }
   }
+}
+
+function requestJsonBody(call: { arguments: unknown[] }): Record<string, unknown> {
+  return JSON.parse(String((call.arguments[1] as RequestInit | undefined)?.body ?? ""));
+}
+
+function fetchCalls(
+  fetchMock: { mock: { calls: Array<{ arguments: unknown[] }> } },
+  includes: string,
+): Array<{ arguments: unknown[] }> {
+  return fetchMock.mock.calls.filter((call) => String(call.arguments[0]).includes(includes));
+}
+
+async function dispatchC2CMessage(
+  adapter: QQAdapter,
+  data: Record<string, unknown> = {},
+  envelope: Record<string, unknown> = {},
+): Promise<Response> {
+  return adapter.handleWebhook(
+    new Request("https://example.test/webhooks/qq", {
+      body: JSON.stringify({
+        d: {
+          author: {
+            user_openid: "user-openid",
+          },
+          content: "hello",
+          id: "message-1",
+          timestamp: "2026-05-09T12:00:00+08:00",
+          ...data,
+        },
+        id: "event-1",
+        op: 0,
+        s: 7,
+        t: "C2C_MESSAGE_CREATE",
+        ...envelope,
+      }),
+      headers: {
+        "X-Bot-Appid": APP_ID,
+      },
+      method: "POST",
+    }),
+  );
 }
 
 describe("QQAdapter webhook security", () => {
@@ -470,6 +513,164 @@ describe("QQAdapter webhook events", () => {
         },
       },
       text: "quoted reply",
+    });
+  });
+
+  it("dedupes redelivered inbound messages with the same msg_id and msg_idx", async () => {
+    const adapter = createAdapter();
+    const { processMessage, processSlashCommand } = await initializeWithProcessSlashCommandSpy(adapter);
+    const body = {
+      d: {
+        author: { user_openid: "user-openid" },
+        content: "hello",
+        id: "message-dup",
+        message_scene: {
+          ext: ["msg_idx=REFIDX_CURRENT"],
+        },
+        msg_seq: 8,
+        timestamp: "2026-05-09T12:00:00+08:00",
+      },
+      id: "event-1",
+      op: 0,
+      s: 7,
+      t: "C2C_MESSAGE_CREATE",
+    };
+
+    const first = await adapter.handleWebhook(
+      new Request("https://example.test/webhooks/qq", {
+        body: JSON.stringify(body),
+        headers: { "X-Bot-Appid": APP_ID },
+        method: "POST",
+      }),
+    );
+    const second = await adapter.handleWebhook(
+      new Request("https://example.test/webhooks/qq", {
+        body: JSON.stringify({ ...body, id: "event-2", s: 8 }),
+        headers: { "X-Bot-Appid": APP_ID },
+        method: "POST",
+      }),
+    );
+
+    assert.strictEqual(first.status, 200);
+    assert.strictEqual(second.status, 200);
+    assert.strictEqual(processMessage.mock.callCount(), 1);
+    assert.strictEqual(processSlashCommand.mock.callCount(), 0);
+  });
+
+  it("does not treat a different msg_idx as a duplicate of the same msg_id", async () => {
+    const adapter = createAdapter();
+    const processMessage = await initializeWithProcessSpy(adapter);
+
+    const response1 = await dispatchC2CMessage(adapter, {
+      id: "message-shared",
+      message_scene: { ext: ["msg_idx=IDX_A"] },
+    });
+    const response2 = await dispatchC2CMessage(adapter, {
+      id: "message-shared",
+      message_scene: { ext: ["msg_idx=IDX_B"] },
+    }, { id: "event-2", s: 8 });
+
+    assert.strictEqual(response1.status, 200);
+    assert.strictEqual(response2.status, 200);
+    assert.strictEqual(processMessage.mock.callCount(), 2);
+  });
+
+  it("dedupes redelivered slash commands without dispatching twice", async () => {
+    const adapter = createAdapter();
+    const { processMessage, processSlashCommand } = await initializeWithProcessSlashCommandSpy(adapter);
+
+    const payload = {
+      d: {
+        author: { user_openid: "user-openid" },
+        content: "/ping",
+        id: "slash-1",
+        timestamp: "2026-05-09T12:00:00+08:00",
+      },
+      id: "event-1",
+      op: 0,
+      s: 7,
+      t: "C2C_MESSAGE_CREATE",
+    };
+    await adapter.handleWebhook(new Request("https://example.test/webhooks/qq", {
+      body: JSON.stringify(payload),
+      headers: { "X-Bot-Appid": APP_ID },
+      method: "POST",
+    }));
+    await adapter.handleWebhook(new Request("https://example.test/webhooks/qq", {
+      body: JSON.stringify({ ...payload, s: 8 }),
+      headers: { "X-Bot-Appid": APP_ID },
+      method: "POST",
+    }));
+
+    assert.strictEqual(processSlashCommand.mock.callCount(), 1);
+    assert.strictEqual(processMessage.mock.callCount(), 0);
+  });
+
+  it("surfaces ARK card metadata when inbound content is empty", async () => {
+    const adapter = createAdapter();
+    const processMessage = await initializeWithProcessSpy(adapter);
+
+    const response = await dispatchC2CMessage(adapter, {
+      ark_data: {
+        ark_name: "小程序",
+        ark_type: "miniapp",
+        fields: {
+          source: "学习助手",
+          title: "快来完成今日学习打卡",
+        },
+        prompt: "[每日打卡]快来完成今日学习打卡",
+      },
+      content: "",
+      message_type: 3,
+    });
+
+    assert.strictEqual(response.status, 200);
+    const message = processMessage.mock.calls[0]?.arguments[2] as { raw: QQRawMessage; text: string };
+    assert.strictEqual(message.raw.message_type, 3);
+    assert.strictEqual(message.raw.ark_data?.ark_type, "miniapp");
+    assert.match(message.text, /小程序/);
+    assert.match(message.text, /每日打卡|快来完成今日学习打卡/);
+  });
+
+  it("uses voice asr_refer_text when inbound content is empty", async () => {
+    const adapter = createAdapter();
+    const processMessage = await initializeWithProcessSpy(adapter);
+
+    await dispatchC2CMessage(adapter, {
+      attachments: [
+        {
+          asr_refer_text: "语音转写结果",
+          content_type: "voice",
+          url: "https://example.test/voice.silk",
+        },
+      ],
+      content: "   ",
+    });
+
+    assertMatchObject(processMessage.mock.calls[0]?.arguments[2], {
+      text: "语音转写结果",
+    });
+  });
+
+  it("collects nested msg_elements text for chat history payloads", async () => {
+    const adapter = createAdapter();
+    const processMessage = await initializeWithProcessSpy(adapter);
+
+    await dispatchC2CMessage(adapter, {
+      content: "",
+      message_type: 102,
+      msg_elements: [
+        { content: "昨天的计划", message_type: 0 },
+        {
+          message_type: 101,
+          msg_elements: [{ content: "并行补充", message_type: 0 }],
+        },
+      ],
+    });
+
+    assertMatchObject(processMessage.mock.calls[0]?.arguments[2], {
+      raw: { message_type: 102 },
+      text: "昨天的计划\n并行补充",
     });
   });
 
@@ -1118,20 +1319,26 @@ describe("QQAdapter outbound rich messages", () => {
       raw: "image caption",
     });
 
-    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
+    assert.deepStrictEqual(requestJsonBody(fetchCalls(fetchMock, "/files")[0]!), {
       file_type: 1,
       srv_send_msg: false,
       url: "https://example.test/image.png",
     });
-    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[2]?.arguments[1]?.body ?? "")), {
-      content: "image caption",
-      media: {
-        file_info: "media-file-info",
-        file_uuid: "media-file-uuid",
-        ttl: 3600,
+    const messageBodies = fetchCalls(fetchMock, "/messages").map(requestJsonBody);
+    assert.deepStrictEqual(messageBodies, [
+      {
+        content: "image caption",
+        msg_type: 0,
       },
-      msg_type: 7,
-    });
+      {
+        media: {
+          file_info: "media-file-info",
+          file_uuid: "media-file-uuid",
+          ttl: 3600,
+        },
+        msg_type: 7,
+      },
+    ]);
   });
 
   it("sends binary image attachments through QQ media file_data", async () => {
@@ -1208,16 +1415,22 @@ describe("QQAdapter outbound rich messages", () => {
       raw: "monthly report",
     });
 
-    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
+    assert.deepStrictEqual(requestJsonBody(fetchCalls(fetchMock, "/files")[0]!), {
       file_data: Buffer.from("report").toString("base64"),
+      file_name: "report.pdf",
       file_type: 4,
       srv_send_msg: false,
     });
-    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[2]?.arguments[1]?.body ?? "")), {
-      content: "monthly report",
-      media: { file_info: "group-file-info" },
-      msg_type: 7,
-    });
+    assert.deepStrictEqual(fetchCalls(fetchMock, "/messages").map(requestJsonBody), [
+      {
+        content: "monthly report",
+        msg_type: 0,
+      },
+      {
+        media: { file_info: "group-file-info" },
+        msg_type: 7,
+      },
+    ]);
   });
 
   it("reuses cached QQ media payloads until ttl expires", async () => {
@@ -1266,16 +1479,33 @@ describe("QQAdapter outbound rich messages", () => {
     await adapter.postMessage("qq:c2c/user-openid", message);
 
     assert.strictEqual(uploadCount, 1);
-    assert.strictEqual(messageCount, 2);
-    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[3]?.arguments[1]?.body ?? "")), {
-      content: "image caption",
-      media: {
-        file_info: "media-file-info",
-        file_uuid: "media-file-uuid",
-        ttl: 3600,
+    assert.strictEqual(messageCount, 4);
+    assert.deepStrictEqual(fetchCalls(fetchMock, "/messages").map(requestJsonBody), [
+      {
+        content: "image caption",
+        msg_type: 0,
       },
-      msg_type: 7,
-    });
+      {
+        media: {
+          file_info: "media-file-info",
+          file_uuid: "media-file-uuid",
+          ttl: 3600,
+        },
+        msg_type: 7,
+      },
+      {
+        content: "image caption",
+        msg_type: 0,
+      },
+      {
+        media: {
+          file_info: "media-file-info",
+          file_uuid: "media-file-uuid",
+          ttl: 3600,
+        },
+        msg_type: 7,
+      },
+    ]);
   });
 
   it("splits multiple image attachments into sequential QQ media messages", async () => {
@@ -1325,25 +1555,29 @@ describe("QQAdapter outbound rich messages", () => {
       raw: "image caption",
     });
 
-    assert.strictEqual(sent.id, "sent-message-2");
-    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[3]?.arguments[1]?.body ?? "")), {
-      content: "image caption",
-      media: {
-        file_info: "media-file-info-1",
-        file_uuid: "media-file-uuid-1",
-        ttl: 3600,
+    assert.strictEqual(sent.id, "sent-message-3");
+    assert.deepStrictEqual(fetchCalls(fetchMock, "/messages").map(requestJsonBody), [
+      {
+        content: "image caption",
+        msg_type: 0,
       },
-      msg_type: 7,
-    });
-    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[4]?.arguments[1]?.body ?? "")), {
-      content: " ",
-      media: {
-        file_info: "media-file-info-2",
-        file_uuid: "media-file-uuid-2",
-        ttl: 3600,
+      {
+        media: {
+          file_info: "media-file-info-1",
+          file_uuid: "media-file-uuid-1",
+          ttl: 3600,
+        },
+        msg_type: 7,
       },
-      msg_type: 7,
-    });
+      {
+        media: {
+          file_info: "media-file-info-2",
+          file_uuid: "media-file-uuid-2",
+          ttl: 3600,
+        },
+        msg_type: 7,
+      },
+    ]);
   });
 
   it("sends QQ Ark messages through adapter-specific API", async () => {
@@ -1456,7 +1690,7 @@ describe("QQAdapter outbound rich messages", () => {
                   },
                   render_data: {
                     label: "Approve",
-                    style: 1,
+                    style: 3,
                     visited_label: "Approve",
                   },
                 },
@@ -1648,19 +1882,230 @@ describe("QQAdapter outbound rich messages", () => {
       }),
     );
 
-    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
+    assert.deepStrictEqual(requestJsonBody(fetchCalls(fetchMock, "/files")[0]!), {
       file_data: Buffer.from("image-bytes").toString("base64"),
+      file_name: "sample image",
       file_type: 1,
       srv_send_msg: false,
     });
-    assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[2]?.arguments[1]?.body ?? "")), {
-      content: "# title\n\nhello",
+    const messageBodies = fetchCalls(fetchMock, "/messages").map(requestJsonBody);
+    assert.strictEqual(messageBodies[0]?.msg_type, 2);
+    assert.ok(String(messageBodies[0]?.markdown && (messageBodies[0].markdown as { content: string }).content).includes("title"));
+    assert.deepStrictEqual(messageBodies[1], {
       media: {
         file_info: "media-file-info",
         ttl: 3600,
       },
       msg_type: 7,
     });
+  });
+
+  it("sends media-only messages as clean msg_type=7 payloads", async () => {
+    const adapter = createAdapter({
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const fetchMock = mock.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({ access_token: "access-token", expires_in: 7200 });
+      }
+      if (url.endsWith("/files")) {
+        return Response.json({ file_info: "media-file-info" });
+      }
+      if (url.endsWith("/messages")) {
+        return Response.json({ id: "sent-message-1" });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.postMessage("qq:c2c/user-openid", {
+      attachments: [{ type: "image", url: "https://example.test/image.png" }],
+      raw: "",
+    });
+
+    assert.deepStrictEqual(fetchCalls(fetchMock, "/messages").map(requestJsonBody), [
+      {
+        media: { file_info: "media-file-info" },
+        msg_type: 7,
+      },
+    ]);
+  });
+
+  it("uses chunked upload for local files above the configured threshold", async () => {
+    const adapter = createAdapter({
+      chunkedUploadThresholdBytes: 4,
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const data = Buffer.from("0123456789");
+    const fetchMock = mock.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({ access_token: "access-token", expires_in: 7200 });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/upload_prepare") {
+        return Response.json({
+          block_size: "10",
+          parts: [
+            {
+              block_size: "10",
+              index: 0,
+              presigned_url: "https://cos.example.test/part0",
+            },
+          ],
+          upload_config: { concurrency: 1 },
+          upload_id: "upload-1",
+        });
+      }
+      if (url === "https://cos.example.test/part0") {
+        assert.strictEqual(init?.method, "PUT");
+        assert.ok(!(init?.headers as Record<string, string> | undefined)?.Authorization);
+        return new Response(null, { status: 200 });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/upload_part_finish") {
+        return Response.json({});
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/files") {
+        return Response.json({ file_info: "chunked-file-info", ttl: 300 });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+        return Response.json({ id: "sent-message-1" });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.postMessage("qq:c2c/user-openid", {
+      attachments: [
+        {
+          data,
+          name: "clip.bin",
+          type: "file",
+        },
+      ],
+      raw: "",
+    });
+
+    assert.deepStrictEqual(requestJsonBody(fetchCalls(fetchMock, "/upload_prepare")[0]!), {
+      file_name: "clip.bin",
+      file_size: "10",
+      file_type: 4,
+      md5: createHash("md5").update(data).digest("hex"),
+      md5_10m: createHash("md5").update(data).digest("hex"),
+      sha1: createHash("sha1").update(data).digest("hex"),
+    });
+    assert.deepStrictEqual(requestJsonBody(fetchCalls(fetchMock, "/upload_part_finish")[0]!), {
+      block_size: "10",
+      md5: createHash("md5").update(data).digest("hex"),
+      part_index: 0,
+      upload_id: "upload-1",
+    });
+    assert.deepStrictEqual(requestJsonBody(fetchCalls(fetchMock, "/files")[0]!), {
+      file_name: "clip.bin",
+      file_type: 4,
+      srv_send_msg: false,
+      upload_id: "upload-1",
+    });
+    assert.deepStrictEqual(fetchCalls(fetchMock, "/messages").map(requestJsonBody), [
+      {
+        media: { file_info: "chunked-file-info", ttl: 300 },
+        msg_type: 7,
+      },
+    ]);
+  });
+
+  it("uses group chunked-upload endpoints for large group files", async () => {
+    const adapter = createAdapter({
+      chunkedUploadThresholdBytes: 4,
+      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+    });
+    const data = Buffer.from("group-file");
+    const fetchMock = mock.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/app/getAppAccessToken") {
+        return Response.json({ access_token: "access-token", expires_in: 7200 });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/groups/group-openid/upload_prepare") {
+        return Response.json({
+          block_size: String(data.byteLength),
+          parts: [{ index: 0, presigned_url: "https://cos.example.test/group-part", block_size: String(data.byteLength) }],
+          upload_id: "group-upload",
+        });
+      }
+      if (url === "https://cos.example.test/group-part") {
+        return new Response(null, { status: 200 });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/groups/group-openid/upload_part_finish") {
+        return Response.json({});
+      }
+      if (url === "https://api.sgroup.qq.com/v2/groups/group-openid/files") {
+        return Response.json({ file_info: "group-chunked-info" });
+      }
+      if (url === "https://api.sgroup.qq.com/v2/groups/group-openid/messages") {
+        return Response.json({ id: "group-sent" });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.postMessage("qq:group/group-openid", {
+      files: [{ data, filename: "notes.txt", mimeType: "text/plain" }],
+      raw: "",
+    });
+
+    assert.ok(fetchCalls(fetchMock, "/v2/groups/group-openid/upload_prepare").length === 1);
+    assert.deepStrictEqual(requestJsonBody(fetchCalls(fetchMock, "/files")[0]!), {
+      file_name: "notes.txt",
+      file_type: 4,
+      srv_send_msg: false,
+      upload_id: "group-upload",
+    });
+  });
+
+  it("falls back to the wiki api.bot.qq.com host when the default token host is unreachable", async () => {
+    const adapter = createAdapter();
+    const fetchMock = mock.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === DEFAULT_TOKEN_ENDPOINT) {
+        throw new TypeError("fetch failed");
+      }
+      if (url === BOT_TOKEN_ENDPOINT) {
+        return Response.json({ access_token: "fallback-token", expires_in: 7200 });
+      }
+      if (url === `${BOT_API_BASE_URL}/v2/users/user-openid/messages`) {
+        return Response.json({ id: "sent-message-1" });
+      }
+      return Response.json({ code: 404 }, { status: 404 });
+    });
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    await adapter.postMessage("qq:c2c/user-openid", "hello");
+
+    assert.deepStrictEqual(
+      fetchMock.mock.calls.map((call) => String(call.arguments[0])),
+      [DEFAULT_TOKEN_ENDPOINT, BOT_TOKEN_ENDPOINT, `${BOT_API_BASE_URL}/v2/users/user-openid/messages`],
+    );
+  });
+
+  it("rejects Chat SDK modal buttons as NotImplemented", async () => {
+    const adapter = createAdapter();
+    await assert.rejects(
+      adapter.postMessage(
+        "qq:c2c/user-openid",
+        Card({
+          children: [
+            Actions([
+              Button({
+                actionType: "modal",
+                id: "open-modal",
+                label: "Open",
+              }),
+            ]),
+          ],
+        }),
+      ),
+      /QQ keyboard does not support modal buttons/,
+    );
   });
 
   it("streams C2C messages using QQ native stream_messages API", async () => {
@@ -2183,6 +2628,27 @@ describe("QQAdapter socket mode", () => {
     });
   });
 
+  it("dedupes redelivered socket mode message events", async () => {
+    const adapter = createAdapter();
+    const processMessage = await initializeWithProcessSpy(adapter);
+    const payload = {
+      d: {
+        author: { user_openid: "user-openid" },
+        content: "hello from socket mode",
+        id: "message-1",
+        message_scene: { ext: ["msg_idx=IDX_1"] },
+      },
+      op: 0 as const,
+      s: 1,
+      t: "C2C_MESSAGE_CREATE" as const,
+    };
+
+    await adapter.handleSocketModePayload(payload);
+    await adapter.handleSocketModePayload({ ...payload, s: 2 });
+
+    assert.strictEqual(processMessage.mock.callCount(), 1);
+  });
+
   it("connects in socket mode and identifies after hello", async () => {
     const sockets: MockSocketModeSocket[] = [];
     const adapter = createAdapter({
@@ -2234,7 +2700,7 @@ describe("QQAdapter socket mode", () => {
     assert.deepStrictEqual(sockets[0]!.sent.map((payload) => JSON.parse(payload)), [
       {
         d: {
-          intents: (1 << 25) | (1 << 26),
+          intents: DEFAULT_GATEWAY_INTENTS,
           properties: {
             "$browser": "@amatsuka/chat-adapter-qq",
             "$device": "@amatsuka/chat-adapter-qq",

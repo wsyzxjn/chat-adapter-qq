@@ -22,12 +22,13 @@ import {
   CALLBACK_ACK_OPCODE,
   CALLBACK_DISPATCH_OPCODE,
   CALLBACK_VALIDATION_OPCODE,
-  DEFAULT_API_BASE_URL,
+  DEFAULT_CHUNKED_UPLOAD_THRESHOLD_BYTES,
   DEFAULT_FETCH_LIMIT,
-  DEFAULT_TOKEN_ENDPOINT,
+  DEFAULT_INBOUND_DEDUPE_MAX_ENTRIES,
+  DEFAULT_INBOUND_DEDUPE_TTL_MS,
+  DEFAULT_UPLOAD_TIMEOUT_MS,
   FEATURE_SUPPORT,
   MAX_CACHE_MESSAGES_PER_THREAD,
-  SANDBOX_API_BASE_URL,
   SIGNATURE_HEADER,
   SIGNATURE_TIMESTAMP_HEADER,
   isQQActionEventType,
@@ -51,6 +52,14 @@ import type {
   QQMediaPayload,
   QQMediaUploadRequest,
   QQMediaUploadResponse,
+  QQApproveGroupJoinRequestOptions,
+  QQCreateGroupJoinApprovalStrategyRequest,
+  QQCreateGroupJoinApprovalStrategyResponse,
+  QQGroupJoinApprovalStrategyList,
+  QQGroupJoinRequestList,
+  QQGroupListQuery,
+  QQGroupMuteMemberOp,
+  QQGroupMuteSetting,
   QQPlatformEvent,
   QQPlatformEventDataMap,
   QQPlatformEventHandler,
@@ -67,6 +76,10 @@ import type {
   QQThreadType,
   QQThreadId,
   QQC2CThreadId,
+  QQUpdateGroupJoinApprovalStrategyRequest,
+  QQUpdateGroupJoinApprovalStrategyResponse,
+  QQUpdateGroupJoinApprovalWhitelistRequest,
+  QQUpdateGroupJoinApprovalWhitelistResponse,
   QQWebhookPayload,
 } from "./types.js";
 import {
@@ -75,9 +88,10 @@ import {
   getPostableAttachments,
   getPostMessagePath,
   getUploadMediaPath,
+  hasSendCaption,
+  resolveQQMediaFileType,
   streamChunkToText,
   toAttachments,
-  toQQMediaFileType,
   validateMessagePayload,
 } from "./utils/message-payload.js";
 import {
@@ -90,18 +104,42 @@ import {
 } from "./utils/thread-id.js";
 import {
   assertNever,
+  buildInboundMessageDedupeKey,
+  bytesToArrayBuffer,
   bytesToBase64,
   bytesToHex,
   concatBytes,
   createBotSeed,
+  findMessageSceneValue,
+  getQQErrorCode,
   hexToBytes,
   isValidationPayload,
   parseCursor,
   parseQQTimestamp,
+  resolveInboundDisplayText,
+  resolveQQEndpoints,
   sha256Hex,
   stringToBytes,
   toChatError,
+  TtlSeenSet,
+  uploadLocalFileChunked,
 } from "./utils/index.js";
+import {
+  buildApproveGroupJoinRequestBody,
+  buildCreateGroupJoinApprovalStrategyRequest,
+  buildSetGroupMemberMuteRequest,
+  buildUpdateGroupJoinApprovalStrategyRequest,
+  buildUpdateGroupJoinApprovalWhitelistRequest,
+  getApproveGroupJoinRequestPath,
+  getExecuteGroupJoinApprovalStrategyPath,
+  getGroupJoinApprovalStrategyCollectionPath,
+  getGroupJoinApprovalStrategyListPath,
+  getGroupJoinApprovalStrategyPath,
+  getGroupJoinApprovalWhitelistPath,
+  getGroupJoinRequestListPath,
+  getGroupMuteSettingPath,
+  resolveGroupOpenId,
+} from "./utils/group-manage.js";
 
 interface AccessTokenCache {
   expiresAt: number;
@@ -173,9 +211,13 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   readonly userName: string;
 
   private chat: ChatInstance | null = null;
-  private readonly apiBaseUrl: string;
+  private apiBaseUrl: string;
+  private tokenEndpoint: string;
+  private fallbackApiBaseUrl: string | undefined;
+  private fallbackTokenEndpoint: string | undefined;
   private readonly config: QQAdapterConfig;
   private readonly converter = new QQFormatConverter();
+  private readonly inboundDedupe: TtlSeenSet;
   private readonly logger: Logger;
   private readonly mediaCache = new Map<string, MediaCacheEntry>();
   private readonly platformEventHandlers = new Map<QQPlatformEventType, Set<QQPlatformEventHandler>>();
@@ -197,7 +239,15 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     this.config = config;
     this.userName = config.userName ?? "qq-bot";
     this.logger = config.logger ?? new ConsoleLogger();
-    this.apiBaseUrl = config.apiBaseUrl ?? (config.sandbox ? SANDBOX_API_BASE_URL : DEFAULT_API_BASE_URL);
+    const endpoints = resolveQQEndpoints(config);
+    this.apiBaseUrl = endpoints.apiBaseUrl;
+    this.tokenEndpoint = endpoints.tokenEndpoint;
+    this.fallbackApiBaseUrl = endpoints.fallbackApiBaseUrl;
+    this.fallbackTokenEndpoint = endpoints.fallbackTokenEndpoint;
+    this.inboundDedupe = new TtlSeenSet(
+      config.inboundDedupeTtlMs ?? DEFAULT_INBOUND_DEDUPE_TTL_MS,
+      config.inboundDedupeMaxEntries ?? DEFAULT_INBOUND_DEDUPE_MAX_ENTRIES,
+    );
   }
 
   async initialize(chat: ChatInstance): Promise<void> {
@@ -465,7 +515,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   parseMessage(raw: QQRawMessage): Message<QQRawMessage> {
     const thread = this.resolveThreadFromRaw(raw);
     const threadId = this.encodeThreadId(thread);
-    const content = raw.content ?? "";
+    const content = resolveInboundDisplayText(raw) || raw.content || "";
     const authorId = this.resolveAuthorId(raw);
     const isMe = raw._chat_is_outbound === true;
     const dateSent = parseQQTimestamp(raw.timestamp, true);
@@ -532,6 +582,146 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       ark,
       msg_type: 3,
     }));
+  }
+
+  /**
+   * Query group mute setting/status (`GET .../restrict_chat_setting`).
+   * Requires the bot to be a group admin. Changelog 20260810.
+   *
+   * `group` may be `qq:group/<group_openid>` or a raw group openid.
+   */
+  async getGroupMuteSetting(group: string): Promise<QQGroupMuteSetting> {
+    const groupOpenId = resolveGroupOpenId(this.name, group);
+    return this.apiRequest<QQGroupMuteSetting>(getGroupMuteSettingPath(groupOpenId), {
+      method: "GET",
+    });
+  }
+
+  /**
+   * Set or unset member mute in a group (`POST .../restrict_chat_setting`).
+   * Batch up to 10 ordinary members. Owner/admin/bot mutes are rejected by QQ.
+   */
+  async setGroupMemberMute(
+    group: string,
+    members: readonly QQGroupMuteMemberOp[],
+  ): Promise<Record<string, unknown>> {
+    const groupOpenId = resolveGroupOpenId(this.name, group);
+    const body = buildSetGroupMemberMuteRequest(members);
+    return this.apiRequest<Record<string, unknown>>(getGroupMuteSettingPath(groupOpenId), {
+      body: JSON.stringify(body),
+      method: "POST",
+    });
+  }
+
+  /**
+   * List pending group join requests (`GET .../join_request_list`).
+   * `limit` defaults to 20 and maxes at 100. Empty `next_cursor` is the last page.
+   */
+  async getGroupJoinRequests(group: string, query: QQGroupListQuery = {}): Promise<QQGroupJoinRequestList> {
+    const groupOpenId = resolveGroupOpenId(this.name, group);
+    return this.apiRequest<QQGroupJoinRequestList>(getGroupJoinRequestListPath(groupOpenId, query), {
+      method: "GET",
+    });
+  }
+
+  /**
+   * Approve or decline a group join request
+   * (`POST .../approval_join_request/{member_openid}`).
+   * `reject_reason` and `add_to_member_blacklist` are only valid for `decline`.
+   */
+  async approveGroupJoinRequest(
+    group: string,
+    memberOpenId: string,
+    options: QQApproveGroupJoinRequestOptions,
+  ): Promise<Record<string, unknown>> {
+    const groupOpenId = resolveGroupOpenId(this.name, group);
+    const body = buildApproveGroupJoinRequestBody(memberOpenId, options);
+    return this.apiRequest<Record<string, unknown>>(
+      getApproveGroupJoinRequestPath(groupOpenId, memberOpenId),
+      {
+        body: JSON.stringify(body),
+        method: "POST",
+      },
+    );
+  }
+
+  /**
+   * List join auto-approval strategies (`GET /v2/groups/join_approval_strategy`).
+   */
+  async getGroupJoinApprovalStrategies(query: QQGroupListQuery = {}): Promise<QQGroupJoinApprovalStrategyList> {
+    return this.apiRequest<QQGroupJoinApprovalStrategyList>(getGroupJoinApprovalStrategyListPath(query), {
+      method: "GET",
+    });
+  }
+
+  /**
+   * Create a join auto-approval strategy (`POST /v2/groups/join_approval_strategy`).
+   * Provide exactly one of `group_openids` or `group_ids` (max 100 groups).
+   */
+  async createGroupJoinApprovalStrategy(
+    data: QQCreateGroupJoinApprovalStrategyRequest,
+  ): Promise<QQCreateGroupJoinApprovalStrategyResponse> {
+    const body = buildCreateGroupJoinApprovalStrategyRequest(data);
+    return this.apiRequest<QQCreateGroupJoinApprovalStrategyResponse>(
+      getGroupJoinApprovalStrategyCollectionPath(),
+      {
+        body: JSON.stringify(body),
+        method: "POST",
+      },
+    );
+  }
+
+  /**
+   * Update a join auto-approval strategy (`PATCH /v2/groups/join_approval_strategy/{strategy_id}`).
+   */
+  async updateGroupJoinApprovalStrategy(
+    strategyId: string,
+    data: QQUpdateGroupJoinApprovalStrategyRequest,
+  ): Promise<QQUpdateGroupJoinApprovalStrategyResponse> {
+    const body = buildUpdateGroupJoinApprovalStrategyRequest(data);
+    return this.apiRequest<QQUpdateGroupJoinApprovalStrategyResponse>(
+      getGroupJoinApprovalStrategyPath(strategyId),
+      {
+        body: JSON.stringify(body),
+        method: "PATCH",
+      },
+    );
+  }
+
+  /**
+   * Delete a join auto-approval strategy (`DELETE /v2/groups/join_approval_strategy/{strategy_id}`).
+   */
+  async deleteGroupJoinApprovalStrategy(strategyId: string): Promise<Record<string, unknown>> {
+    return this.apiRequest<Record<string, unknown>>(getGroupJoinApprovalStrategyPath(strategyId), {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * Execute a join auto-approval strategy (`POST .../join_approval_strategy/{strategy_id}/execute`).
+   */
+  async executeGroupJoinApprovalStrategy(strategyId: string): Promise<Record<string, unknown>> {
+    return this.apiRequest<Record<string, unknown>>(getExecuteGroupJoinApprovalStrategyPath(strategyId), {
+      method: "POST",
+    });
+  }
+
+  /**
+   * Add or remove whitelist QQ numbers on a join auto-approval strategy.
+   * Pass QQ numbers as strings. Batch max 10,000.
+   */
+  async updateGroupJoinApprovalWhitelist(
+    strategyId: string,
+    data: QQUpdateGroupJoinApprovalWhitelistRequest,
+  ): Promise<QQUpdateGroupJoinApprovalWhitelistResponse> {
+    const body = buildUpdateGroupJoinApprovalWhitelistRequest(data);
+    return this.apiRequest<QQUpdateGroupJoinApprovalWhitelistResponse>(
+      getGroupJoinApprovalWhitelistPath(strategyId),
+      {
+        body: JSON.stringify(body),
+        method: "POST",
+      },
+    );
   }
 
   private async postPayload(
@@ -927,6 +1117,17 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       if (!this.chat) {
         this.logger.error(`QQ adapter received ${source} event before initialize()`);
         return "not_initialized";
+      }
+
+      const dedupeKey = buildInboundMessageDedupeKey(event.raw, event.threadId);
+      if (dedupeKey && this.inboundDedupe.seen(dedupeKey)) {
+        this.logger.debug("Ignoring duplicate QQ inbound message", {
+          eventId: this.resolvePayloadEventId(payload),
+          key: dedupeKey,
+          source,
+          type: payload.t,
+        });
+        return "ignored";
       }
 
       const message = this.parseMessage(event.raw);
@@ -1419,7 +1620,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   }
 
   private resolveQuotedMessage(raw: QQIncomingMessage): QQQuotedMessage | null {
-    const refMsgIdx = this.findMessageSceneValue(raw.message_scene?.ext, "ref_msg_idx");
+    const refMsgIdx = findMessageSceneValue(raw.message_scene?.ext, "ref_msg_idx");
     if (!refMsgIdx) {
       return null;
     }
@@ -1430,12 +1631,6 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       ...(element?.message_type !== undefined ? { messageType: element.message_type } : {}),
       msgIdx: refMsgIdx,
     };
-  }
-
-  private findMessageSceneValue(ext: readonly string[] | undefined, key: string): string | null {
-    const prefix = `${key}=`;
-    const segment = ext?.find((item) => item.startsWith(prefix));
-    return segment ? segment.slice(prefix.length) : null;
   }
 
   private logMessageElements(eventType: QQMessageEventType, raw: QQRawMessage): void {
@@ -1490,15 +1685,20 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       return [this.applySendOptions(threadId, thread, payload, options)];
     }
 
-    const fallbackContent = payload.content ?? payload.markdown?.content ?? " ";
     const payloads: QQSendMessageRequest[] = [];
+    if (hasSendCaption(payload)) {
+      payloads.push(this.applySendOptions(threadId, thread, payload, options));
+    }
+
     for (const [index, attachment] of attachments.entries()) {
       const media = await this.uploadMedia(thread, attachment);
+      const mediaOptions = payloads.length === 0 && index === 0
+        ? options
+        : { ...options, messageReference: undefined };
       payloads.push(this.applySendOptions(threadId, thread, {
-        content: index === 0 ? fallbackContent : " ",
         media,
         msg_type: 7,
-      }, index === 0 ? options : { ...options, messageReference: undefined }));
+      }, mediaOptions));
     }
     return payloads;
   }
@@ -1538,34 +1738,102 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   }
 
   private async uploadMedia(thread: QQThreadId, attachment: Attachment): Promise<QQMediaPayload> {
-    const fileType = toQQMediaFileType(thread, attachment);
-    const request: QQMediaUploadRequest = {
-      file_type: fileType,
-      srv_send_msg: false,
-    };
     let cacheSource: string;
+    let data: Uint8Array | undefined;
     if (attachment.url) {
-      request.url = attachment.url;
       cacheSource = `url:${attachment.url}`;
     } else {
-      const data = await this.readAttachmentData(attachment);
-      request.file_data = bytesToBase64(data);
+      data = await this.readAttachmentData(attachment);
       cacheSource = `data:${await sha256Hex(data)}`;
     }
 
+    const size = data?.byteLength ?? attachment.size;
+    const fileType = resolveQQMediaFileType(thread, attachment, size);
     const cacheKey = `${thread.type}:${fileType}:${cacheSource}`;
     const cached = this.getCachedMedia(cacheKey);
     if (cached) {
       return cached;
     }
 
-    const uploaded = await this.apiRequest<QQMediaUploadResponse>(getUploadMediaPath(thread), {
-      body: JSON.stringify(request),
-      method: "POST",
-    });
+    const uploaded = data && this.shouldUseChunkedUpload(data.byteLength)
+      ? await this.uploadMediaChunked(thread, attachment, data, fileType)
+      : await this.uploadMediaSimple(thread, attachment, data, fileType);
     const media = this.toMediaPayload(uploaded);
     this.setCachedMedia(cacheKey, media);
     return media;
+  }
+
+  private shouldUseChunkedUpload(size: number): boolean {
+    const threshold = this.config.chunkedUploadThresholdBytes ?? DEFAULT_CHUNKED_UPLOAD_THRESHOLD_BYTES;
+    return size > threshold;
+  }
+
+  private async uploadMediaSimple(
+    thread: QQThreadId,
+    attachment: Attachment,
+    data: Uint8Array | undefined,
+    fileType: number,
+  ): Promise<QQMediaUploadResponse> {
+    const request: QQMediaUploadRequest = {
+      file_type: fileType,
+      srv_send_msg: false,
+      ...(attachment.name ? { file_name: attachment.name } : {}),
+    };
+    if (attachment.url) {
+      request.url = attachment.url;
+    } else if (data) {
+      request.file_data = bytesToBase64(data);
+    }
+
+    return this.apiRequest<QQMediaUploadResponse>(getUploadMediaPath(thread), {
+      body: JSON.stringify(request),
+      method: "POST",
+    });
+  }
+
+  private async uploadMediaChunked(
+    thread: QQThreadId,
+    attachment: Attachment,
+    data: Uint8Array,
+    fileType: number,
+  ): Promise<QQMediaUploadResponse> {
+    return uploadLocalFileChunked(thread, data, {
+      api: {
+        put: (url, body) => this.putPresigned(url, body),
+        request: (path, init) => this.apiRequest(path, init),
+      },
+      fileName: attachment.name ?? "file",
+      fileType,
+    });
+  }
+
+  private async putPresigned(url: string, body: Uint8Array): Promise<void> {
+    const timeoutMs = Math.max(
+      this.config.uploadTimeoutMs ?? DEFAULT_UPLOAD_TIMEOUT_MS,
+      this.config.requestTimeoutMs ?? 10_000,
+    );
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        body: bytesToArrayBuffer(body),
+        headers: {
+          "Content-Length": String(body.byteLength),
+        },
+        method: "PUT",
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new ChatError(`QQ chunked upload PUT failed (${response.status}) at ${url}`, "NETWORK_ERROR");
+      }
+    } catch (error) {
+      if (error instanceof ChatError || error instanceof RateLimitError) {
+        throw error;
+      }
+      throw new ChatError(`QQ chunked upload PUT failed at ${url}`, "NETWORK_ERROR", error);
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   private toMediaPayload(media: QQMediaUploadResponse): QQMediaPayload {
@@ -1653,12 +1921,40 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       return cached.token;
     }
 
+    try {
+      return await this.fetchAndCacheAccessToken(this.tokenEndpoint);
+    } catch (error) {
+      if (!this.canFallbackTokenHost(error) || !this.fallbackTokenEndpoint) {
+        throw error;
+      }
+
+      const fallbackTokenEndpoint = this.fallbackTokenEndpoint;
+      this.logger.warn("QQ token host failed; trying compatibility endpoint", {
+        error,
+        fallback: fallbackTokenEndpoint,
+        tokenEndpoint: this.tokenEndpoint,
+      });
+      const token = await this.fetchAndCacheAccessToken(fallbackTokenEndpoint);
+      this.tokenEndpoint = fallbackTokenEndpoint;
+      if (this.fallbackApiBaseUrl) {
+        this.apiBaseUrl = this.fallbackApiBaseUrl;
+      }
+      this.fallbackApiBaseUrl = undefined;
+      this.fallbackTokenEndpoint = undefined;
+      return token;
+    }
+  }
+
+  private canFallbackTokenHost(error: unknown): boolean {
+    return error instanceof ChatError && (error.code === "NETWORK_ERROR" || error.code === "NOT_FOUND");
+  }
+
+  private async fetchAndCacheAccessToken(endpoint: string): Promise<string> {
     const timeoutMs = this.config.requestTimeoutMs ?? 10_000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const endpoint = this.config.tokenEndpoint ?? DEFAULT_TOKEN_ENDPOINT;
       const response = await fetch(endpoint, {
         body: JSON.stringify({
           appId: this.config.appId,
@@ -1697,11 +1993,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       if (error instanceof ChatError || error instanceof RateLimitError) {
         throw error;
       }
-      throw new ChatError(
-        `QQ token request failed at ${this.config.tokenEndpoint ?? DEFAULT_TOKEN_ENDPOINT}`,
-        "NETWORK_ERROR",
-        error,
-      );
+      throw new ChatError(`QQ token request failed at ${endpoint}`, "NETWORK_ERROR", error);
     } finally {
       clearTimeout(timeoutId);
     }
@@ -1756,7 +2048,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       }
 
       const body = JSON.parse(bodyText) as T;
-      const businessCode = getQQBusinessCode(body);
+      const businessCode = getQQErrorCode(body);
       if (businessCode !== undefined && businessCode !== 0 && response.status !== 201 && response.status !== 202) {
         throw toChatError({
           endpoint,
@@ -1776,22 +2068,6 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       clearTimeout(timeoutId);
     }
   }
-}
-
-function getQQBusinessCode(body: unknown): number | undefined {
-  if (!body || typeof body !== "object") {
-    return undefined;
-  }
-  const record = body as Record<string, unknown>;
-  const value = record.code ?? record.errcode;
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.trunc(value);
-  }
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? Math.trunc(parsed) : undefined;
-  }
-  return undefined;
 }
 
 function parseRetryAfterMs(value: string | null): number | undefined {

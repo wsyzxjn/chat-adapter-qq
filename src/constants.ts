@@ -27,16 +27,51 @@ export const GATEWAY_HELLO_OPCODE = 10;
 /** Gateway heartbeat ACK opcode. */
 export const GATEWAY_HEARTBEAT_ACK_OPCODE = 11;
 
-/** QQ OpenAPI base URL (production). */
+/**
+ * Historical QQ OpenAPI host still referenced by IP-whitelist / older wiki pages.
+ * This remains the adapter default so existing installs keep working.
+ */
 export const DEFAULT_API_BASE_URL = "https://api.sgroup.qq.com";
 /** QQ OpenAPI base URL (sandbox). */
 export const SANDBOX_API_BASE_URL = "https://sandbox.api.sgroup.qq.com";
-/** QQ app access token endpoint. */
+/** Historical QQ app access token endpoint. This remains the adapter default. */
 export const DEFAULT_TOKEN_ENDPOINT = "https://bots.qq.com/app/getAppAccessToken";
+/**
+ * Newer wiki OpenAPI host (`api.bot.qq.com`). Select with `apiHost: "bot"`
+ * or via automatic host fallback when the default family is unreachable.
+ */
+export const BOT_API_BASE_URL = "https://api.bot.qq.com";
+/** Newer wiki token endpoint on the `api.bot.qq.com` host. */
+export const BOT_TOKEN_ENDPOINT = "https://api.bot.qq.com/app/getAppAccessToken";
 /** Default message pagination limit for in-memory cache reads. */
 export const DEFAULT_FETCH_LIMIT = 50;
 /** Per-thread in-memory message cache cap. */
 export const MAX_CACHE_MESSAGES_PER_THREAD = 200;
+/** Inbound message dedupe TTL. Covers QQ redelivery and the 5-minute passive reply window. */
+export const DEFAULT_INBOUND_DEDUPE_TTL_MS = 10 * 60 * 1000;
+/** Maximum remembered inbound message keys. Oldest entries are evicted first. */
+export const DEFAULT_INBOUND_DEDUPE_MAX_ENTRIES = 4096;
+/**
+ * Local/binary attachments larger than this use chunked upload
+ * (`upload_prepare` / part PUT / `upload_part_finish`). Smaller binaries stay
+ * on `POST .../files` with `file_data`. URL uploads always use the simple path.
+ */
+export const DEFAULT_CHUNKED_UPLOAD_THRESHOLD_BYTES = 8 * 1024 * 1024;
+/** QQ hard limit for C2C/group media uploads. */
+export const QQ_MEDIA_HARD_LIMIT_BYTES = 200 * 1024 * 1024;
+/** Prefix length used for QQ `md5_10m` (first 10002432 bytes). */
+export const MD5_10M_BYTES = 10_002_432;
+/** Default chunk size when `upload_prepare` omits `block_size` (5 MiB). */
+export const DEFAULT_CHUNK_BLOCK_SIZE_BYTES = 5 * 1024 * 1024;
+/** Minimum timeout used for chunked part PUT requests. */
+export const DEFAULT_UPLOAD_TIMEOUT_MS = 60_000;
+/** Soft limits by `file_type`; exceeding them downgrades the upload to file type 4. */
+export const QQ_MEDIA_SOFT_LIMIT_BYTES: Readonly<Record<number, number>> = {
+  1: 20 * 1024 * 1024,
+  2: 30 * 1024 * 1024,
+  3: 20 * 1024 * 1024,
+  4: 200 * 1024 * 1024,
+};
 
 /** QQ gateway event intent bit values. */
 export const QQ_INTENTS = {
@@ -53,8 +88,26 @@ export const QQ_INTENTS = {
   PUBLIC_GUILD_MESSAGES: 1 << 30,
 } as const;
 
-/** Default gateway intents for this adapter's current C2C/GROUP scope. */
-export const DEFAULT_GATEWAY_INTENTS = QQ_INTENTS.GROUP_AND_C2C_EVENT | QQ_INTENTS.INTERACTION;
+/**
+ * Default gateway intents for this adapter's current C2C/GROUP scope.
+ * Includes `MESSAGE_AUDIT` so HTTP 201/202 public/active sends can receive
+ * `MESSAGE_AUDIT_PASS` / `MESSAGE_AUDIT_REJECT`. `GROUP_JOIN_REQUEST` rides
+ * `GROUP_AND_C2C_EVENT` (bot must be a group admin to receive it).
+ * Override with `socketMode.intents`.
+ */
+export const DEFAULT_GATEWAY_INTENTS =
+  QQ_INTENTS.GROUP_AND_C2C_EVENT | QQ_INTENTS.INTERACTION | QQ_INTENTS.MESSAGE_AUDIT;
+
+/** Max members per `setGroupMemberMute` request (ordinary members only). */
+export const QQ_GROUP_MUTE_MEMBER_BATCH_LIMIT = 10;
+/** Default `limit` for join-request and join-strategy list APIs. */
+export const QQ_GROUP_JOIN_REQUEST_DEFAULT_LIMIT = 20;
+/** Max `limit` for join-request and join-strategy list APIs. */
+export const QQ_GROUP_JOIN_REQUEST_MAX_LIMIT = 100;
+/** Max groups associated with one join auto-approval strategy. */
+export const QQ_GROUP_JOIN_APPROVAL_STRATEGY_MAX_GROUPS = 100;
+/** Max QQ numbers in one whitelist add/del request. */
+export const QQ_GROUP_JOIN_APPROVAL_WHITELIST_BATCH_LIMIT = 10_000;
 
 /** QQ webhook signature header. */
 export const SIGNATURE_HEADER = "X-Signature-Ed25519";
@@ -85,6 +138,7 @@ export const PLATFORM_EVENT_TYPES = [
   "FRIEND_DEL",
   "GROUP_ADD_ROBOT",
   "GROUP_DEL_ROBOT",
+  "GROUP_JOIN_REQUEST",
   "GROUP_MSG_REJECT",
   "GROUP_MSG_RECEIVE",
   "MESSAGE_AUDIT_PASS",
