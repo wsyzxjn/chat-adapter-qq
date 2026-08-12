@@ -1884,6 +1884,7 @@ describe("QQAdapter outbound rich messages", () => {
 
     assert.deepStrictEqual(requestJsonBody(fetchCalls(fetchMock, "/files")[0]!), {
       file_data: Buffer.from("image-bytes").toString("base64"),
+      file_name: "sample image",
       file_type: 1,
       srv_send_msg: false,
     });
