@@ -15,7 +15,7 @@ export {
   stringToBytes,
 } from "./crypto.js";
 export { resolveQQEndpoints } from "./endpoints.js";
-export { toChatError } from "./errors.js";
+export { getQQErrorCode, toChatError } from "./errors.js";
 export { buildInboundMessageDedupeKey } from "./inbound-dedupe.js";
 export { resolveInboundDisplayText } from "./inbound-text.js";
 export { findMessageSceneValue } from "./message-scene.js";

@@ -240,7 +240,7 @@ Embed 在 QQ 官方 C2C/GROUP 场景下不支持，当前不适配。
 
 ## 群管理
 
-changelog 20260810 的群禁言、入群申请和入群自动审批策略挂在适配器实例上，不是 Chat SDK 标准 API。调用方需要机器人为**群管理员**；QQ 拒绝时按 HTTP 状态码 + `code`/`errcode` 映射为 `ChatError`（例如 `PERMISSION_DENIED`）。`group` 参数可以是 `qq:group/<group_openid>` 或原始 group openid。
+changelog 20260810 的群禁言、入群申请和入群自动审批策略挂在适配器实例上，不是 Chat SDK 标准 API。调用方需要机器人为**群管理员**；QQ `11282`（`ErrorCheckAdminNotPass`）以及 HTTP 403 会映射为 `ChatError` `PERMISSION_DENIED`。错误码读取顺序是 `code` → `errcode` → `err_code`。`group` 参数可以是 `qq:group/<group_openid>` 或原始 group openid。
 
 ```ts
 const setting = await qq.getGroupMuteSetting("qq:group/<group_openid>");
@@ -369,7 +369,7 @@ OpenAPI 默认仍使用历史域名 `https://api.sgroup.qq.com` 与 `https://bot
 - 不把 QQ 平台私有概念伪装成 Chat SDK 标准字段
 - 跨平台字段只映射确定语义，其他信息保留在 `raw`
 - 辅助函数按职责拆小，避免单个 utils 文件持续膨胀
-- 错误映射基于 HTTP 状态码和 QQ 错误码，不匹配错误文案
+- 错误映射基于 HTTP 状态码和 QQ 错误码（`code` / `errcode` / `err_code`），不匹配错误文案
 - 默认安全配置贴近 QQ 官方要求，测试开关显式暴露
 
 ## 开发

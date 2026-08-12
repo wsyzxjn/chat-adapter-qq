@@ -42,7 +42,7 @@
 - 入站消息事件必须按 `msg_id` + `msg_seq` / `message_scene.ext.msg_idx` 去重；重复投递只 ACK/no-op，不得再次 `processMessage` / slash
 - 富媒体发送：`msg_type=7` 只带 `media`，说明文字走单独的 text/markdown 消息，避免混用触发 `22006`
 - 本地/二进制附件超过分片阈值走 `upload_prepare` / part PUT / `upload_part_finish`，小文件仍用 `file_data`
-- 错误分类仅基于 HTTP 状态码 + QQ 返回错误码（`code/errcode`），禁止使用错误文案关键词匹配
+- 错误分类仅基于 HTTP 状态码 + QQ 返回错误码（`code` → `errcode` → `err_code`），禁止使用错误文案关键词匹配
 
 ### 3.3 Socket Mode
 
@@ -76,7 +76,7 @@ QQ 专有方法挂在适配器实例上（与 `postArk` / `postQQMessage` 相同
 - 入群自动审批策略：`getGroupJoinApprovalStrategies`、`createGroupJoinApprovalStrategy`、`updateGroupJoinApprovalStrategy`、`deleteGroupJoinApprovalStrategy`、`executeGroupJoinApprovalStrategy`、`updateGroupJoinApprovalWhitelist`
 - 事件 `GROUP_JOIN_REQUEST` 走现有 `qq.onEvent`（webhook + socket 共用）；intent 为 `GROUP_AND_C2C_EVENT`；仅群管理员机器人可收到；下行自动通过时保留 `auto_approved.strategy_id`
 - 群标识接受 `qq:group/<group_openid>` 或原始 `group_openid`
-- 管理接口要求机器人为群管理员；权限失败走现有 HTTP 状态码 + QQ `code/errcode` 映射
+- 管理接口要求机器人为群管理员；管理员未通过是 QQ `11282` → `PERMISSION_DENIED`（也识别 body 里的 `err_code`）
 
 官方 wiki 的群管理目录页目前几乎为空；HTTP 路径以 changelog 20260810 与 OpenAPI 形状为准：
 
@@ -89,6 +89,9 @@ QQ 专有方法挂在适配器实例上（与 `postArk` / `postQQMessage` 相同
 
 - 优先使用 `chat` 标准错误类型（`ChatError`, `RateLimitError`, `NotImplementedError`）
 - 不新增平台私有异常类型，除非有强需求且经过明确讨论
+- 错误码读取顺序：`code` → `errcode` → `err_code`（新 wiki 失败体用 `err_code`）
+- `11282`（ErrorCheckAdminNotPass）→ `PERMISSION_DENIED`；`11281`（ErrorCheckAdminFailed）是可重试系统错误，保持未映射
+- `11298` 是 IP 白名单拒绝，Chat SDK 仍映射为 `PERMISSION_DENIED`，不要当成缺群管理员
 - Webhook 错误返回统一结构：
   - `{ error: { code, message, details? } }`
 

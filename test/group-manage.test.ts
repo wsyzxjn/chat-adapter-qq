@@ -295,7 +295,33 @@ describe("QQAdapter group management APIs", () => {
   it("maps group-admin permission failures through ChatError", async () => {
     mockQqApi({
       [`https://api.sgroup.qq.com/v2/groups/${GROUP_OPENID}/restrict_chat_setting`]: () =>
-        Response.json({ code: 11298, message: "forbidden" }, { status: 403 }),
+        Response.json({ code: 11282, message: "ErrorCheckAdminNotPass" }, { status: 403 }),
+    });
+    const adapter = createAdapter();
+    await assertChatError(
+      adapter.getGroupMuteSetting(GROUP_OPENID),
+      "PERMISSION_DENIED",
+      /code=11282/,
+    );
+  });
+
+  it("maps err_code-only admin failures without HTTP 403", async () => {
+    mockQqApi({
+      [`https://api.sgroup.qq.com/v2/groups/${GROUP_OPENID}/restrict_chat_setting`]: () =>
+        Response.json({ err_code: 11282, message: "ErrorCheckAdminNotPass" }, { status: 400 }),
+    });
+    const adapter = createAdapter();
+    await assertChatError(
+      adapter.getGroupMuteSetting(GROUP_OPENID),
+      "PERMISSION_DENIED",
+      /code=11282/,
+    );
+  });
+
+  it("maps IP whitelist 11298 as PERMISSION_DENIED, distinct from admin failure", async () => {
+    mockQqApi({
+      [`https://api.sgroup.qq.com/v2/groups/${GROUP_OPENID}/restrict_chat_setting`]: () =>
+        Response.json({ code: 11298, message: "ip not in whitelist" }, { status: 403 }),
     });
     const adapter = createAdapter();
     await assertChatError(

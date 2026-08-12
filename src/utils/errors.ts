@@ -22,11 +22,17 @@ const QQ_ERROR_CODE_MAP = new Map<number, QQMappedErrorType>([
   [11251, "AUTH_FAILED"],
   [11261, "AUTH_FAILED"],
   [11275, "AUTH_FAILED"],
-  [11298, "PERMISSION_DENIED"],
+  // 11274 ErrorUserAuthNotPass: OAuth user did not grant this API's scope.
+  [11274, "PERMISSION_DENIED"],
   [11253, "PERMISSION_DENIED"],
   [11254, "PERMISSION_DENIED"],
   [11264, "PERMISSION_DENIED"],
   [11265, "PERMISSION_DENIED"],
+  // 11282 ErrorCheckAdminNotPass: bot/user is not an admin (group-manage APIs).
+  // 11281 ErrorCheckAdminFailed is a retryable system error — leave unmapped.
+  [11282, "PERMISSION_DENIED"],
+  // 11298 is IP whitelist / access denied, not "missing group admin" (that is 11282).
+  [11298, "PERMISSION_DENIED"],
   [304026, "PERMISSION_DENIED"],
   [304027, "PERMISSION_DENIED"],
   [304028, "PERMISSION_DENIED"],
@@ -51,7 +57,7 @@ interface QQParsedOpenApiError {
  *
  * Priority:
  * 1) HTTP 429
- * 2) Known QQ `code/errcode` mapping
+ * 2) Known QQ `code` / `errcode` / `err_code` mapping
  * 3) HTTP status fallback
  */
 export function toChatError(params: {
@@ -96,6 +102,18 @@ export function toChatError(params: {
   return new ChatError(`${params.message} at ${params.endpoint}${detail}`, "NETWORK_ERROR");
 }
 
+/**
+ * Read a QQ OpenAPI error/business code.
+ * Preference: `code` → `errcode` → `err_code` (newer wiki bodies).
+ */
+export function getQQErrorCode(body: unknown): number | undefined {
+  if (!body || typeof body !== "object") {
+    return undefined;
+  }
+  const root = body as Record<string, unknown>;
+  return toIntegerCode(root.code) ?? toIntegerCode(root.errcode) ?? toIntegerCode(root.err_code);
+}
+
 function parseQQOpenApiError(responseBody: string | undefined): QQParsedOpenApiError {
   if (!responseBody) {
     return {};
@@ -108,7 +126,7 @@ function parseQQOpenApiError(responseBody: string | undefined): QQParsedOpenApiE
     }
 
     const root = parsed as Record<string, unknown>;
-    const code = toIntegerCode(root.code ?? root.errcode);
+    const code = getQQErrorCode(root);
     const message = toErrorMessage(root.message ?? root.msg);
     const error: QQParsedOpenApiError = {};
     if (code !== undefined) {

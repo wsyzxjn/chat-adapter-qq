@@ -111,6 +111,7 @@ import {
   concatBytes,
   createBotSeed,
   findMessageSceneValue,
+  getQQErrorCode,
   hexToBytes,
   isValidationPayload,
   parseCursor,
@@ -2047,7 +2048,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       }
 
       const body = JSON.parse(bodyText) as T;
-      const businessCode = getQQBusinessCode(body);
+      const businessCode = getQQErrorCode(body);
       if (businessCode !== undefined && businessCode !== 0 && response.status !== 201 && response.status !== 202) {
         throw toChatError({
           endpoint,
@@ -2067,22 +2068,6 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       clearTimeout(timeoutId);
     }
   }
-}
-
-function getQQBusinessCode(body: unknown): number | undefined {
-  if (!body || typeof body !== "object") {
-    return undefined;
-  }
-  const record = body as Record<string, unknown>;
-  const value = record.code ?? record.errcode;
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.trunc(value);
-  }
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? Math.trunc(parsed) : undefined;
-  }
-  return undefined;
 }
 
 function parseRetryAfterMs(value: string | null): number | undefined {
