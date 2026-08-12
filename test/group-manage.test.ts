@@ -331,6 +331,41 @@ describe("QQAdapter group management APIs", () => {
     );
   });
 
+  it("maps OAuth 11274 to PERMISSION_DENIED and leaves retryable 11281 unmapped", async () => {
+    const mutePath = `https://api.sgroup.qq.com/v2/groups/${GROUP_OPENID}/restrict_chat_setting`;
+    mockQqApi({
+      [mutePath]: () => Response.json({ err_code: 11274, message: "ErrorUserAuthNotPass" }, { status: 403 }),
+    });
+    const adapter = createAdapter();
+    await assertChatError(
+      adapter.getGroupMuteSetting(GROUP_OPENID),
+      "PERMISSION_DENIED",
+      /code=11274/,
+    );
+
+    mockQqApi({
+      [mutePath]: () => Response.json({ err_code: 11281, message: "ErrorCheckAdminFailed" }, { status: 500 }),
+    });
+    await assertChatError(
+      adapter.getGroupMuteSetting(GROUP_OPENID),
+      "NETWORK_ERROR",
+      /code=11281/,
+    );
+  });
+
+  it("prefers code over err_code when both are present", async () => {
+    mockQqApi({
+      [`https://api.sgroup.qq.com/v2/groups/${GROUP_OPENID}/restrict_chat_setting`]: () =>
+        Response.json({ code: 11282, err_code: 99999, message: "ErrorCheckAdminNotPass" }, { status: 400 }),
+    });
+    const adapter = createAdapter();
+    await assertChatError(
+      adapter.getGroupMuteSetting(GROUP_OPENID),
+      "PERMISSION_DENIED",
+      /code=11282/,
+    );
+  });
+
   it("creates, lists, updates, executes, whitelists, and deletes join approval strategies", async () => {
     const fetchMock = mockQqApi({
       "https://api.sgroup.qq.com/v2/groups/join_approval_strategy?limit=20": () =>
