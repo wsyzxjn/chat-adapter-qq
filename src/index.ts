@@ -1,5 +1,14 @@
 export { QQAdapter } from "./adapter.js";
-export { QQ_INTENTS } from "./constants.js";
+export {
+  BOT_API_BASE_URL,
+  BOT_TOKEN_ENDPOINT,
+  DEFAULT_API_BASE_URL,
+  DEFAULT_CHUNKED_UPLOAD_THRESHOLD_BYTES,
+  DEFAULT_GATEWAY_INTENTS,
+  DEFAULT_TOKEN_ENDPOINT,
+  QQ_INTENTS,
+  SANDBOX_API_BASE_URL,
+} from "./constants.js";
 export { QQFormatConverter } from "./format-converter.js";
 export { isQQMentioned } from "./mentions.js";
 export type {
@@ -7,8 +16,10 @@ export type {
   QQAdapterBaseConfig,
   QQAdapterConfig,
   QQAdapterMode,
+  QQApiHost,
   QQActionEventDataMap,
   QQActionEventType,
+  QQArkData,
   QQArkKeyValue,
   QQArkObject,
   QQArkObjectKeyValue,
@@ -26,6 +37,11 @@ export type {
   QQMediaPayload,
   QQMediaUploadRequest,
   QQMediaUploadResponse,
+  QQUploadConfig,
+  QQUploadPart,
+  QQUploadPartFinishRequest,
+  QQUploadPrepareRequest,
+  QQUploadPrepareResponse,
   QQPlatformEvent,
   QQPlatformEventDataMap,
   QQPlatformEventHandler,

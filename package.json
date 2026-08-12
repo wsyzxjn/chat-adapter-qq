@@ -12,8 +12,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsdown",
-    "build:production": "NODE_ENV=production tsdown --sourcemap false",
+    "build": "tsdown --config-loader native",
+    "build:production": "NODE_ENV=production tsdown --config-loader native --sourcemap false",
     "pretest": "pnpm run build",
     "test": "node --test test/*.test.*",
     "test:coverage": "node --test --test-coverage test/*.test.*",

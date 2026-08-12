@@ -38,6 +38,14 @@ export type QQThreadType = QQThreadId["type"];
 /** Runtime transport mode used for receiving QQ events. */
 export type QQAdapterMode = "socket" | "webhook";
 
+/**
+ * OpenAPI host family.
+ *
+ * - `sgroup`: historical default (`api.sgroup.qq.com` + `bots.qq.com` token)
+ * - `bot`: current wiki hosts (`api.bot.qq.com` for both API and token)
+ */
+export type QQApiHost = "sgroup" | "bot";
+
 export type QQSocketModeMessageData = ArrayBuffer | string;
 
 export interface QQSocketModeWebSocket {
@@ -77,7 +85,7 @@ export interface QQSocketModeOptions {
   url?: string;
   /** Advanced/test: custom WebSocket factory. Defaults to globalThis.WebSocket. */
   webSocketFactory?: QQSocketModeWebSocketFactory;
-  /** Gateway event intents. Defaults to GROUP_AND_C2C_EVENT | INTERACTION. */
+  /** Gateway event intents. Defaults to GROUP_AND_C2C_EVENT | INTERACTION | MESSAGE_AUDIT. */
   intents?: number;
 }
 
@@ -85,14 +93,34 @@ export interface QQSocketModeOptions {
 export interface QQAdapterBaseConfig {
   /** Advanced: whether to send QQ interaction ACK API calls for button events. Defaults to true. */
   acknowledgeInteractions?: boolean;
+  /**
+   * OpenAPI host family. Defaults to `sgroup` so existing installs keep working.
+   * Set `bot` to use `https://api.bot.qq.com` for both token and OpenAPI.
+   * Explicit `apiBaseUrl` / `tokenEndpoint` always win.
+   */
+  apiHost?: QQApiHost;
   /** Advanced/test: override QQ OpenAPI base URL. */
   apiBaseUrl?: string;
   /** QQ bot app id. */
   appId: string;
   /** Advanced: Bot Secret used for webhook signing; falls back to clientSecret. */
   botSecret?: string;
+  /**
+   * Local/binary attachments larger than this (bytes) use chunked upload.
+   * Defaults to 8 MiB. URL uploads always use the simple `POST .../files` path.
+   */
+  chunkedUploadThresholdBytes?: number;
   /** QQ bot client secret for access token retrieval. */
   clientSecret: string;
+  /**
+   * When default hosts are used, retry the other host family once on token
+   * network/`NOT_FOUND` failures and stick to the working family. Defaults to true.
+   */
+  hostFallback?: boolean;
+  /** Inbound message dedupe cache cap. Defaults to 4096 keys. */
+  inboundDedupeMaxEntries?: number;
+  /** Inbound message dedupe TTL in milliseconds. Defaults to 10 minutes. Set `0` to disable. */
+  inboundDedupeTtlMs?: number;
   /** Logger implementation from Chat SDK. */
   logger?: Logger;
   /** Advanced security option: whether webhook requests must include and match `X-Bot-Appid`. */
@@ -105,6 +133,8 @@ export interface QQAdapterBaseConfig {
   strictWebhookEvents?: boolean;
   /** Advanced/test: override token endpoint for custom environments. */
   tokenEndpoint?: string;
+  /** Timeout for chunked part PUT requests. Defaults to at least 60 seconds. */
+  uploadTimeoutMs?: number;
   /** Chat SDK bot username fallback when QQ author payload is incomplete. */
   userName?: string;
   /** Enable Ed25519 webhook signature verification. */
@@ -229,10 +259,21 @@ export interface QQMessageMention {
 
 export interface QQMessageElement {
   [key: string]: unknown;
+  ark_data?: QQArkData;
+  attachments?: QQMessageAttachment[];
+  author?: QQMessageAuthor;
   content?: string;
   message_type?: number;
+  msg_elements?: QQMessageElement[];
   msg_idx?: string;
   type?: string;
+}
+
+export interface QQArkData {
+  ark_name?: string;
+  ark_type?: string;
+  fields?: Record<string, unknown>;
+  prompt?: string;
 }
 
 export interface QQMessageScene {
@@ -267,6 +308,7 @@ export interface QQKeyboardRow {
 
 export interface QQKeyboardButton {
   action: {
+    anchor?: number;
     data: string;
     enter?: boolean;
     permission: {
@@ -312,8 +354,10 @@ export interface QQMediaPayload {
 
 export interface QQMediaUploadRequest {
   file_data?: string;
+  file_name?: string;
   file_type: number;
   srv_send_msg: boolean;
+  upload_id?: string;
   url?: string;
 }
 
@@ -321,7 +365,47 @@ export interface QQMediaUploadResponse {
   file_info: string;
   file_uuid?: string;
   id?: string;
+  raw_url?: string;
   ttl?: number;
+}
+
+export interface QQUploadPrepareRequest {
+  file_name: string;
+  file_size: string;
+  file_type: number;
+  md5: string;
+  md5_10m: string;
+  sha1: string;
+}
+
+export interface QQUploadPart {
+  block_size?: number | string;
+  index?: number;
+  part_index?: number;
+  presigned_url?: string;
+  url?: string;
+}
+
+export interface QQUploadConfig {
+  concurrency?: number;
+  retry_delay?: number;
+  retry_timeout?: number;
+}
+
+export interface QQUploadPrepareResponse {
+  block_size?: number | string;
+  data?: QQUploadPrepareResponse;
+  part_list?: QQUploadPart[];
+  parts?: QQUploadPart[];
+  upload_config?: QQUploadConfig;
+  upload_id?: string;
+}
+
+export interface QQUploadPartFinishRequest {
+  block_size: string;
+  md5: string;
+  part_index: number;
+  upload_id: string;
 }
 
 /** Shared raw message shape used for inbound and outbound normalization. */
@@ -348,6 +432,8 @@ export interface QQBaseMessage {
   _chat_quoted_message?: QQQuotedMessage;
   /** File attachments. */
   attachments?: QQMessageAttachment[];
+  /** Inbound ARK card payload (`message_type=3`). */
+  ark_data?: QQArkData;
   /** Author metadata. */
   author?: QQMessageAuthor;
   /** Message text content. */
@@ -364,6 +450,8 @@ export interface QQBaseMessage {
   id?: string;
   /** QQ msg_id field (also used for passive reply context). */
   msg_id?: string;
+  /** Inbound message sequence used with `msg_id` for redelivery dedupe when present. */
+  msg_seq?: number | string;
   /** QQ message elements, used by newer payloads for rich/message-reference data. */
   msg_elements?: QQMessageElement[];
   /** QQ message scene metadata, including msg_idx/ref_msg_idx values. */
@@ -546,7 +634,7 @@ export interface QQSendMessageRequest {
   msg_id?: string;
   /** Passive reply sequence in the same msg_id context. */
   msg_seq?: number;
-  /** QQ msg type: 0=text, 6=input_notify. */
+  /** QQ msg type: 0=text, 2=markdown, 3=ark, 6=input_notify, 7=media. */
   msg_type: number;
 }
 

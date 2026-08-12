@@ -13,7 +13,7 @@
 - 入口：`src/index.ts`
 - 适配器实现：`src/adapter.ts`
 - 常量定义：`src/constants.ts`
-- 通用辅助：`src/utils.ts`
+- 通用辅助：`src/utils/`
 - 类型定义：`src/types.ts`
 - 文本格式转换：`src/format-converter.ts`
 - 本地测试 Bot：`test/bot.ts`
@@ -39,6 +39,9 @@
 - 不在本地强制区分主动/被动，统一以服务端返回为准
 - 服务端拒绝后映射为标准 `ChatError`（例如 `PERMISSION_DENIED`）
 - 被动上下文（`msg_id/msg_seq/event_id`）从入站消息缓存并在发送时自动带上
+- 入站消息事件必须按 `msg_id` + `msg_seq` / `message_scene.ext.msg_idx` 去重；重复投递只 ACK/no-op，不得再次 `processMessage` / slash
+- 富媒体发送：`msg_type=7` 只带 `media`，说明文字走单独的 text/markdown 消息，避免混用触发 `22006`
+- 本地/二进制附件超过分片阈值走 `upload_prepare` / part PUT / `upload_part_finish`，小文件仍用 `file_data`
 - 错误分类仅基于 HTTP 状态码 + QQ 返回错误码（`code/errcode`），禁止使用错误文案关键词匹配
 
 ### 3.3 Socket Mode
@@ -51,7 +54,7 @@
   - `op=1` Heartbeat / `op=11` Heartbeat ACK
   - `op=7` Reconnect
   - `op=9` Invalid Session
-- 默认 intents 只覆盖当前范围：`GROUP_AND_C2C_EVENT | INTERACTION`
+- 默认 intents 覆盖当前范围：`GROUP_AND_C2C_EVENT | INTERACTION | MESSAGE_AUDIT`（可通过 `socketMode.intents` 覆盖）
 - `disconnect()` 必须关闭 Socket Mode 连接和定时器
 
 ### 3.4 线程 ID
@@ -75,9 +78,11 @@
 
 - `editMessage`
 - `addReaction` / `removeReaction`
-- Chat SDK `files`
+- modal / options load
+- schedule message
+- QQ Embed 发送
 
-以上必须继续显式 `NotImplementedError`，不要静默吞掉。
+以上必须继续显式 `NotImplementedError`，不要静默吞掉。Chat SDK `files` 已实现，走与附件相同的上传/发送路径。
 
 ## 6. 本地开发命令
 

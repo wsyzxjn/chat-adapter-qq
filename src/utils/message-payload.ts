@@ -20,6 +20,10 @@ import {
   stringifyMarkdown,
   walkAst,
 } from "chat";
+import {
+  QQ_MEDIA_HARD_LIMIT_BYTES,
+  QQ_MEDIA_SOFT_LIMIT_BYTES,
+} from "../constants.js";
 import { QQFormatConverter } from "../format-converter.js";
 import type {
   QQKeyboardButton,
@@ -154,6 +158,14 @@ export function getUploadMediaPath(thread: QQThreadId): string {
   return `${getThreadBasePath(thread)}/files`;
 }
 
+export function getUploadPreparePath(thread: QQThreadId): string {
+  return `${getThreadBasePath(thread)}/upload_prepare`;
+}
+
+export function getUploadPartFinishPath(thread: QQThreadId): string {
+  return `${getThreadBasePath(thread)}/upload_part_finish`;
+}
+
 export function getDeleteMessagePath(thread: QQThreadId, messageId: string): string {
   return `${getThreadBasePath(thread)}/messages/${encodeURIComponent(messageId)}`;
 }
@@ -283,6 +295,36 @@ export function toQQMediaFileType(thread: QQThreadId, attachment: Attachment): n
     default:
       return assertNever(attachment.type);
   }
+}
+
+/**
+ * Resolve QQ `file_type`, downgrading to file (4) when the binary exceeds the
+ * documented soft limit. Hard-limit oversize files fail with `ChatError`.
+ */
+export function resolveQQMediaFileType(
+  thread: QQThreadId,
+  attachment: Attachment,
+  size?: number,
+): number {
+  if (size !== undefined && size > QQ_MEDIA_HARD_LIMIT_BYTES) {
+    throw new ChatError(
+      `QQ media attachments cannot exceed 200MB (got ${size} bytes).`,
+      "INVALID_REQUEST",
+    );
+  }
+
+  const fileType = toQQMediaFileType(thread, attachment);
+  const softLimit = QQ_MEDIA_SOFT_LIMIT_BYTES[fileType];
+  if (size !== undefined && softLimit !== undefined && size > softLimit && fileType !== 4) {
+    return 4;
+  }
+  return fileType;
+}
+
+/** Whether a content/markdown/keyboard payload should be sent separately from media. */
+export function hasSendCaption(payload: QQSendMessageRequest): boolean {
+  const text = payload.content ?? payload.markdown?.content ?? "";
+  return text.trim().length > 0 || payload.keyboard !== undefined || payload.ark !== undefined;
 }
 
 function isPostableRaw(message: AdapterPostableMessage): message is PostableRaw {
@@ -534,6 +576,9 @@ function extractKeyboardButtons(card: CardElement): QQKeyboardButton[] {
 
       for (const action of child.children) {
         if (action.type === "button") {
+          if (action.actionType === "modal") {
+            throw new NotImplementedError("QQ keyboard does not support modal buttons.", "modal");
+          }
           output.push(toQQCallbackButton(action.label, action.id, action.value ?? action.id, action.style));
           continue;
         }
@@ -600,8 +645,11 @@ function toQQLinkButton(
 }
 
 function toQQButtonStyle(style: QQKeyboardButton["render_data"]["style"] | "primary" | "danger" | "default" | undefined): number {
+  if (typeof style === "number" && Number.isInteger(style) && style >= 0 && style <= 3) {
+    return style;
+  }
   if (style === "primary") {
-    return 1;
+    return 3;
   }
   return 0;
 }

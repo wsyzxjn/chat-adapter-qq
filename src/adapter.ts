@@ -22,12 +22,13 @@ import {
   CALLBACK_ACK_OPCODE,
   CALLBACK_DISPATCH_OPCODE,
   CALLBACK_VALIDATION_OPCODE,
-  DEFAULT_API_BASE_URL,
+  DEFAULT_CHUNKED_UPLOAD_THRESHOLD_BYTES,
   DEFAULT_FETCH_LIMIT,
-  DEFAULT_TOKEN_ENDPOINT,
+  DEFAULT_INBOUND_DEDUPE_MAX_ENTRIES,
+  DEFAULT_INBOUND_DEDUPE_TTL_MS,
+  DEFAULT_UPLOAD_TIMEOUT_MS,
   FEATURE_SUPPORT,
   MAX_CACHE_MESSAGES_PER_THREAD,
-  SANDBOX_API_BASE_URL,
   SIGNATURE_HEADER,
   SIGNATURE_TIMESTAMP_HEADER,
   isQQActionEventType,
@@ -75,9 +76,10 @@ import {
   getPostableAttachments,
   getPostMessagePath,
   getUploadMediaPath,
+  hasSendCaption,
+  resolveQQMediaFileType,
   streamChunkToText,
   toAttachments,
-  toQQMediaFileType,
   validateMessagePayload,
 } from "./utils/message-payload.js";
 import {
@@ -90,17 +92,24 @@ import {
 } from "./utils/thread-id.js";
 import {
   assertNever,
+  buildInboundMessageDedupeKey,
+  bytesToArrayBuffer,
   bytesToBase64,
   bytesToHex,
   concatBytes,
   createBotSeed,
+  findMessageSceneValue,
   hexToBytes,
   isValidationPayload,
   parseCursor,
   parseQQTimestamp,
+  resolveInboundDisplayText,
+  resolveQQEndpoints,
   sha256Hex,
   stringToBytes,
   toChatError,
+  TtlSeenSet,
+  uploadLocalFileChunked,
 } from "./utils/index.js";
 
 interface AccessTokenCache {
@@ -173,9 +182,13 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   readonly userName: string;
 
   private chat: ChatInstance | null = null;
-  private readonly apiBaseUrl: string;
+  private apiBaseUrl: string;
+  private tokenEndpoint: string;
+  private fallbackApiBaseUrl: string | undefined;
+  private fallbackTokenEndpoint: string | undefined;
   private readonly config: QQAdapterConfig;
   private readonly converter = new QQFormatConverter();
+  private readonly inboundDedupe: TtlSeenSet;
   private readonly logger: Logger;
   private readonly mediaCache = new Map<string, MediaCacheEntry>();
   private readonly platformEventHandlers = new Map<QQPlatformEventType, Set<QQPlatformEventHandler>>();
@@ -197,7 +210,15 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     this.config = config;
     this.userName = config.userName ?? "qq-bot";
     this.logger = config.logger ?? new ConsoleLogger();
-    this.apiBaseUrl = config.apiBaseUrl ?? (config.sandbox ? SANDBOX_API_BASE_URL : DEFAULT_API_BASE_URL);
+    const endpoints = resolveQQEndpoints(config);
+    this.apiBaseUrl = endpoints.apiBaseUrl;
+    this.tokenEndpoint = endpoints.tokenEndpoint;
+    this.fallbackApiBaseUrl = endpoints.fallbackApiBaseUrl;
+    this.fallbackTokenEndpoint = endpoints.fallbackTokenEndpoint;
+    this.inboundDedupe = new TtlSeenSet(
+      config.inboundDedupeTtlMs ?? DEFAULT_INBOUND_DEDUPE_TTL_MS,
+      config.inboundDedupeMaxEntries ?? DEFAULT_INBOUND_DEDUPE_MAX_ENTRIES,
+    );
   }
 
   async initialize(chat: ChatInstance): Promise<void> {
@@ -465,7 +486,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   parseMessage(raw: QQRawMessage): Message<QQRawMessage> {
     const thread = this.resolveThreadFromRaw(raw);
     const threadId = this.encodeThreadId(thread);
-    const content = raw.content ?? "";
+    const content = resolveInboundDisplayText(raw) || raw.content || "";
     const authorId = this.resolveAuthorId(raw);
     const isMe = raw._chat_is_outbound === true;
     const dateSent = parseQQTimestamp(raw.timestamp, true);
@@ -927,6 +948,17 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       if (!this.chat) {
         this.logger.error(`QQ adapter received ${source} event before initialize()`);
         return "not_initialized";
+      }
+
+      const dedupeKey = buildInboundMessageDedupeKey(event.raw, event.threadId);
+      if (dedupeKey && this.inboundDedupe.seen(dedupeKey)) {
+        this.logger.debug("Ignoring duplicate QQ inbound message", {
+          eventId: this.resolvePayloadEventId(payload),
+          key: dedupeKey,
+          source,
+          type: payload.t,
+        });
+        return "ignored";
       }
 
       const message = this.parseMessage(event.raw);
@@ -1419,7 +1451,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   }
 
   private resolveQuotedMessage(raw: QQIncomingMessage): QQQuotedMessage | null {
-    const refMsgIdx = this.findMessageSceneValue(raw.message_scene?.ext, "ref_msg_idx");
+    const refMsgIdx = findMessageSceneValue(raw.message_scene?.ext, "ref_msg_idx");
     if (!refMsgIdx) {
       return null;
     }
@@ -1430,12 +1462,6 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       ...(element?.message_type !== undefined ? { messageType: element.message_type } : {}),
       msgIdx: refMsgIdx,
     };
-  }
-
-  private findMessageSceneValue(ext: readonly string[] | undefined, key: string): string | null {
-    const prefix = `${key}=`;
-    const segment = ext?.find((item) => item.startsWith(prefix));
-    return segment ? segment.slice(prefix.length) : null;
   }
 
   private logMessageElements(eventType: QQMessageEventType, raw: QQRawMessage): void {
@@ -1490,15 +1516,20 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       return [this.applySendOptions(threadId, thread, payload, options)];
     }
 
-    const fallbackContent = payload.content ?? payload.markdown?.content ?? " ";
     const payloads: QQSendMessageRequest[] = [];
+    if (hasSendCaption(payload)) {
+      payloads.push(this.applySendOptions(threadId, thread, payload, options));
+    }
+
     for (const [index, attachment] of attachments.entries()) {
       const media = await this.uploadMedia(thread, attachment);
+      const mediaOptions = payloads.length === 0 && index === 0
+        ? options
+        : { ...options, messageReference: undefined };
       payloads.push(this.applySendOptions(threadId, thread, {
-        content: index === 0 ? fallbackContent : " ",
         media,
         msg_type: 7,
-      }, index === 0 ? options : { ...options, messageReference: undefined }));
+      }, mediaOptions));
     }
     return payloads;
   }
@@ -1538,34 +1569,102 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   }
 
   private async uploadMedia(thread: QQThreadId, attachment: Attachment): Promise<QQMediaPayload> {
-    const fileType = toQQMediaFileType(thread, attachment);
-    const request: QQMediaUploadRequest = {
-      file_type: fileType,
-      srv_send_msg: false,
-    };
     let cacheSource: string;
+    let data: Uint8Array | undefined;
     if (attachment.url) {
-      request.url = attachment.url;
       cacheSource = `url:${attachment.url}`;
     } else {
-      const data = await this.readAttachmentData(attachment);
-      request.file_data = bytesToBase64(data);
+      data = await this.readAttachmentData(attachment);
       cacheSource = `data:${await sha256Hex(data)}`;
     }
 
+    const size = data?.byteLength ?? attachment.size;
+    const fileType = resolveQQMediaFileType(thread, attachment, size);
     const cacheKey = `${thread.type}:${fileType}:${cacheSource}`;
     const cached = this.getCachedMedia(cacheKey);
     if (cached) {
       return cached;
     }
 
-    const uploaded = await this.apiRequest<QQMediaUploadResponse>(getUploadMediaPath(thread), {
-      body: JSON.stringify(request),
-      method: "POST",
-    });
+    const uploaded = data && this.shouldUseChunkedUpload(data.byteLength)
+      ? await this.uploadMediaChunked(thread, attachment, data, fileType)
+      : await this.uploadMediaSimple(thread, attachment, data, fileType);
     const media = this.toMediaPayload(uploaded);
     this.setCachedMedia(cacheKey, media);
     return media;
+  }
+
+  private shouldUseChunkedUpload(size: number): boolean {
+    const threshold = this.config.chunkedUploadThresholdBytes ?? DEFAULT_CHUNKED_UPLOAD_THRESHOLD_BYTES;
+    return size > threshold;
+  }
+
+  private async uploadMediaSimple(
+    thread: QQThreadId,
+    attachment: Attachment,
+    data: Uint8Array | undefined,
+    fileType: number,
+  ): Promise<QQMediaUploadResponse> {
+    const request: QQMediaUploadRequest = {
+      file_type: fileType,
+      srv_send_msg: false,
+      ...(attachment.name ? { file_name: attachment.name } : {}),
+    };
+    if (attachment.url) {
+      request.url = attachment.url;
+    } else if (data) {
+      request.file_data = bytesToBase64(data);
+    }
+
+    return this.apiRequest<QQMediaUploadResponse>(getUploadMediaPath(thread), {
+      body: JSON.stringify(request),
+      method: "POST",
+    });
+  }
+
+  private async uploadMediaChunked(
+    thread: QQThreadId,
+    attachment: Attachment,
+    data: Uint8Array,
+    fileType: number,
+  ): Promise<QQMediaUploadResponse> {
+    return uploadLocalFileChunked(thread, data, {
+      api: {
+        put: (url, body) => this.putPresigned(url, body),
+        request: (path, init) => this.apiRequest(path, init),
+      },
+      fileName: attachment.name ?? "file",
+      fileType,
+    });
+  }
+
+  private async putPresigned(url: string, body: Uint8Array): Promise<void> {
+    const timeoutMs = Math.max(
+      this.config.uploadTimeoutMs ?? DEFAULT_UPLOAD_TIMEOUT_MS,
+      this.config.requestTimeoutMs ?? 10_000,
+    );
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        body: bytesToArrayBuffer(body),
+        headers: {
+          "Content-Length": String(body.byteLength),
+        },
+        method: "PUT",
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new ChatError(`QQ chunked upload PUT failed (${response.status}) at ${url}`, "NETWORK_ERROR");
+      }
+    } catch (error) {
+      if (error instanceof ChatError || error instanceof RateLimitError) {
+        throw error;
+      }
+      throw new ChatError(`QQ chunked upload PUT failed at ${url}`, "NETWORK_ERROR", error);
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   private toMediaPayload(media: QQMediaUploadResponse): QQMediaPayload {
@@ -1653,12 +1752,40 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       return cached.token;
     }
 
+    try {
+      return await this.fetchAndCacheAccessToken(this.tokenEndpoint);
+    } catch (error) {
+      if (!this.canFallbackTokenHost(error) || !this.fallbackTokenEndpoint) {
+        throw error;
+      }
+
+      const fallbackTokenEndpoint = this.fallbackTokenEndpoint;
+      this.logger.warn("QQ token host failed; trying compatibility endpoint", {
+        error,
+        fallback: fallbackTokenEndpoint,
+        tokenEndpoint: this.tokenEndpoint,
+      });
+      const token = await this.fetchAndCacheAccessToken(fallbackTokenEndpoint);
+      this.tokenEndpoint = fallbackTokenEndpoint;
+      if (this.fallbackApiBaseUrl) {
+        this.apiBaseUrl = this.fallbackApiBaseUrl;
+      }
+      this.fallbackApiBaseUrl = undefined;
+      this.fallbackTokenEndpoint = undefined;
+      return token;
+    }
+  }
+
+  private canFallbackTokenHost(error: unknown): boolean {
+    return error instanceof ChatError && (error.code === "NETWORK_ERROR" || error.code === "NOT_FOUND");
+  }
+
+  private async fetchAndCacheAccessToken(endpoint: string): Promise<string> {
     const timeoutMs = this.config.requestTimeoutMs ?? 10_000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const endpoint = this.config.tokenEndpoint ?? DEFAULT_TOKEN_ENDPOINT;
       const response = await fetch(endpoint, {
         body: JSON.stringify({
           appId: this.config.appId,
@@ -1697,11 +1824,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       if (error instanceof ChatError || error instanceof RateLimitError) {
         throw error;
       }
-      throw new ChatError(
-        `QQ token request failed at ${this.config.tokenEndpoint ?? DEFAULT_TOKEN_ENDPOINT}`,
-        "NETWORK_ERROR",
-        error,
-      );
+      throw new ChatError(`QQ token request failed at ${endpoint}`, "NETWORK_ERROR", error);
     } finally {
       clearTimeout(timeoutId);
     }

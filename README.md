@@ -91,6 +91,8 @@ await bot.initialize();
 
 默认会读取 `/gateway/bot` 的 `shards` 与 `session_start_limit`，自动启动全部推荐分片并遵守 Identify 并发限制。设置 `shard: [index, total]` 可只启动指定分片，设置 `autoSharding: false` 可强制单分片。连接会按 QQ Gateway 关闭码选择 Resume、重新 Identify 或停止重连，并使用带上限的指数退避。
 
+默认 Gateway intents 为 `GROUP_AND_C2C_EVENT | INTERACTION | MESSAGE_AUDIT`，因此主动/public 发送返回 HTTP 201/202 后可以收到 `MESSAGE_AUDIT_PASS` / `MESSAGE_AUDIT_REJECT`。仍可通过 `socketMode.intents` 覆盖。
+
 如果宿主自己维护 WebSocket，也可以把 QQ payload 交给：
 
 ```ts
@@ -109,7 +111,11 @@ await qq.handleSocketModePayload(payload);
 | `userName` | 否 | Chat SDK 里的机器人名称，默认 `qq-bot` |
 | `botSecret` | 否 | Webhook 签名密钥；默认使用 `clientSecret` |
 | `socketMode` | 否 | Socket Mode 配置 |
-| `sandbox` | 否 | 使用 QQ 沙箱 OpenAPI 域名 |
+| `sandbox` | 否 | 使用 QQ 沙箱 OpenAPI 域名（`sandbox.api.sgroup.qq.com`） |
+| `apiHost` | 否 | OpenAPI 主机族：`sgroup`（默认，历史域名）或 `bot`（当前 wiki 的 `api.bot.qq.com`） |
+| `apiBaseUrl` | 否 | 覆盖 OpenAPI 根地址 |
+| `tokenEndpoint` | 否 | 覆盖 Access Token 地址 |
+| `hostFallback` | 否 | 使用默认主机时，token 网络/`NOT_FOUND` 失败会尝试另一主机族并粘滞切换；默认 `true` |
 | `logger` | 否 | 自定义 Chat SDK logger |
 
 更多高级配置可直接查看 `QQAdapterConfig` 类型。
@@ -132,7 +138,7 @@ const unsubscribe = qq.onEvent(async (event) => {
 });
 ```
 
-主动/public 消息被 QQ 以 HTTP 201/202 异步接受时，返回消息的 `raw._chat_delivery_status` 为 `accepted`，并保留 `_chat_http_status`、`_chat_async_code` 和 `_chat_async_message`。后续结果可通过 `MESSAGE_AUDIT_PASS` / `MESSAGE_AUDIT_REJECT` 监听；Socket Mode 需要订阅 `QQ_INTENTS.MESSAGE_AUDIT`。
+主动/public 消息被 QQ 以 HTTP 201/202 异步接受时，返回消息的 `raw._chat_delivery_status` 为 `accepted`，并保留 `_chat_http_status`、`_chat_async_code` 和 `_chat_async_message`。后续结果可通过 `MESSAGE_AUDIT_PASS` / `MESSAGE_AUDIT_REJECT` 监听。Socket Mode 默认已包含 `QQ_INTENTS.MESSAGE_AUDIT`。
 
 ## QQ 专有发送
 
@@ -167,9 +173,20 @@ await thread.post({
 });
 ```
 
-媒体附件支持 URL 或二进制 `data` / `fetchData`，支持 `image`、`video`、`audio` 和 C2C/群聊 `file`。QQ OpenAPI 每条消息只接受一个 `media` 对象，因此多个附件/文件会按输入顺序拆成多条消息。上传/登记媒体后会把返回的 `file_info`、`file_uuid` 和 `ttl` 透传到 `media`，并在当前进程内按 TTL 复用；`ttl=0` 视为长期有效，未返回 TTL 时不缓存。
+媒体附件支持 URL 或二进制 `data` / `fetchData`，支持 `image`、`video`、`audio` 和 C2C/群聊 `file`。QQ OpenAPI 每条消息只接受一个 `media` 对象，因此多个附件/文件会按输入顺序拆成多条消息。说明文字会先作为独立的 text/markdown 消息发送，媒体本身使用干净的 `msg_type=7`（不混写 `content`，避免官方错误码 `22006`）。上传/登记媒体后会把返回的 `file_info`、`file_uuid` 和 `ttl` 透传到 `media`，并在当前进程内按 TTL 复用；`ttl=0` 视为长期有效，未返回 TTL 时不缓存。
+
+本地/二进制附件默认超过 **8 MiB** 时走官方分片上传（`upload_prepare` → 预签名 PUT → `upload_part_finish` → `POST .../files` 携带 `upload_id`）；更小的二进制仍用 `file_data`。公网 URL 始终走简单 `POST .../files`。可用 `chunkedUploadThresholdBytes` 覆盖阈值。超过软限制的图片/视频/语音会按文档降级为 `file_type=4`；超过 200MB 硬限制会抛出 `ChatError`。
 
 JSX/Card 里的 `Image({ url })` 和 `imageUrl` 会自动转成 QQ media，支持普通 URL 和 `data:image/...;base64,...`；`Text` / `CardText`、`CardLink`、`Fields`、`Table`（含 `caption`）、`Chart`、`Divider` 会渲染到 Markdown，`Button` / `LinkButton` 会渲染为 QQ Keyboard。
+
+Chat SDK 能表达的按钮会映射为：
+
+- `Button` → 回调按钮（`action.type=1`）
+- `LinkButton` → 跳转按钮（`action.type=0`）
+- `style: "primary"` → QQ `render_data.style=3`（蓝底白字）
+- `style: "danger"` / 默认 → `style=0`（灰线框；QQ 没有红色样式）
+
+QQ 指令按钮（`action.type=2`）、`enter` / `reply` / `anchor`、样式 `2` 目前没有对应的 Chat SDK 字段，不会伪造 API；`actionType: "modal"` 会显式 `NotImplementedError`。
 
 QQ 专有能力挂在适配器实例上。ARK 消息可直接调用：
 
@@ -226,6 +243,14 @@ bot.onSlashCommand("/help", async (event) => {
 
 QQ 官方字段会保留在 `message.raw` / `event.payload` 中。适配器只把跨平台能力映射到 Chat SDK 标准字段，平台特有数据不强行塞进标准模型。
 
+Webhook 与 Socket Mode 会对 `C2C_MESSAGE_CREATE` / `GROUP_AT_MESSAGE_CREATE` / `GROUP_MESSAGE_CREATE` 做入站去重：同一 `msg_id` 加上 `msg_seq` 和/或 `message_scene.ext` 里的 `msg_idx` 视为重复投递，只 ACK、不再次进入 `processMessage` / slash。缓存有 TTL（默认 10 分钟）和容量上限。
+
+`content` 为空或只有空白时，会尽量补全 Chat 可见文本：
+
+- 语音附件的 `asr_refer_text`
+- `message_type=3` 的 `ark_data`（标题/prompt/来源等；完整数据仍在 `raw.ark_data`）
+- `message_type=101/102` 的嵌套 `msg_elements` 文本；抽不出文本时保持空字符串，原始结构仍在 `raw`
+
 例如引用消息会从 QQ 的 `message_scene` / `msg_elements` 中归一化到：
 
 ```ts
@@ -260,6 +285,8 @@ qq:guild/<guild_id>/<channel_id>
 - QQ Embed 发送
 
 `fetchMessages` / `fetchMessage` 直接调用适配器时仍读取本进程缓存，不是 QQ 服务端历史消息查询。适配器同时声明了 `persistThreadHistory = true`，因此通过 Chat SDK 运行时接收/发送的线程历史会写入所配置的 state adapter，可跨进程恢复（持久性取决于所选 state adapter；`state-memory` 本身只在内存中保存）。
+
+OpenAPI 默认仍使用历史域名 `https://api.sgroup.qq.com` 与 `https://bots.qq.com/app/getAppAccessToken`，避免打断现有 IP 白名单。当前 wiki 使用 `https://api.bot.qq.com`；可设 `apiHost: "bot"`，或保留默认并依赖 `hostFallback` 在默认 token 主机不可达时切换。显式 `apiBaseUrl` / `tokenEndpoint` 始终优先。沙箱域名仍是 `https://sandbox.api.sgroup.qq.com`。
 
 ## 代码风格
 
@@ -331,7 +358,7 @@ pnpm run test:bot:ws
 QQ_DEBUG_PAYLOADS=true
 # 默认 true；不设置 shard 时按 /gateway/bot 推荐值自动分片
 QQ_SOCKET_MODE_AUTO_SHARDING=true
-# 未设置时默认包含 GROUP_AND_C2C_EVENT、INTERACTION、MESSAGE_AUDIT
+# 未设置时默认包含 GROUP_AND_C2C_EVENT、INTERACTION、MESSAGE_AUDIT（与适配器默认 intents 一致）
 QQ_SOCKET_MODE_INTENTS=
 QQ_SOCKET_MODE_SHARD=0,1
 QQ_SOCKET_MODE_URL=
