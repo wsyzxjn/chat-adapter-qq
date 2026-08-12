@@ -529,6 +529,7 @@ export type QQPlatformEventType =
   | "FRIEND_DEL"
   | "GROUP_ADD_ROBOT"
   | "GROUP_DEL_ROBOT"
+  | "GROUP_JOIN_REQUEST"
   | "GROUP_MSG_REJECT"
   | "GROUP_MSG_RECEIVE"
   | "MESSAGE_AUDIT_PASS"
@@ -551,6 +552,7 @@ export interface QQPlatformEventDataMap {
   FRIEND_DEL: QQThreadResolvableEventData;
   GROUP_ADD_ROBOT: QQThreadResolvableEventData;
   GROUP_DEL_ROBOT: QQThreadResolvableEventData;
+  GROUP_JOIN_REQUEST: QQGroupJoinRequestEventData;
   GROUP_MSG_REJECT: QQThreadResolvableEventData;
   GROUP_MSG_RECEIVE: QQThreadResolvableEventData;
   MESSAGE_AUDIT_PASS: QQMessageAuditEventData;
@@ -689,4 +691,205 @@ export interface QQStreamMessageResponse {
   ext_info?: { ref_idx: string };
   /** Remaining message length. */
   remain_msg_len?: number;
+}
+
+/** Join-request apply source from QQ group management APIs / `GROUP_JOIN_REQUEST`. */
+export type QQGroupJoinApplySource = "self_apply" | "invited";
+/** Join-request verification method. */
+export type QQGroupJoinVerifyMethod = "verify_message" | "admin_review_qa";
+/** Member mute mutation op. `add`/`update` require `mute_expire_at`; `del` unsets mute. */
+export type QQGroupMuteMemberOpType = "add" | "update" | "del";
+/** Join-request approval op. */
+export type QQGroupJoinRequestApprovalOp = "approve" | "decline";
+/** Join auto-approval strategy enable flag. */
+export type QQGroupJoinApprovalEnable = "on" | "off";
+/** Join auto-approval strategy group association op. */
+export type QQGroupJoinApprovalGroupOp = "add" | "del";
+/** Join auto-approval whitelist mutation op. */
+export type QQGroupJoinApprovalWhitelistOp = "add" | "del";
+/** Global group mute mode. */
+export type QQGroupMuteMode = "none" | "always" | "schedule";
+
+/** Scheduled mute window on the group global rule. */
+export interface QQGroupMuteScheduleRule {
+  enabled?: boolean;
+  end_at?: string;
+  start_at?: string;
+  task_id?: string;
+}
+
+/** Recurring mute window on the group global rule. */
+export interface QQGroupMuteRecurringRule {
+  enabled?: boolean;
+  end_time?: string;
+  start_time?: string;
+  task_id?: string;
+  weekdays?: number[];
+}
+
+/** Group-wide mute rule returned by mute-setting query. */
+export interface QQGroupMuteGlobalRule {
+  mode?: QQGroupMuteMode | string;
+  recurring_rules?: QQGroupMuteRecurringRule[];
+  schedule_rules?: QQGroupMuteScheduleRule[];
+}
+
+/** Per-member mute status from mute-setting query. */
+export interface QQGroupMutedMember {
+  member_openid: string;
+  mute_expire_at?: string;
+  union_openid?: string;
+  username?: string;
+}
+
+/**
+ * GET `/v2/groups/{group_openid}/restrict_chat_setting` response.
+ * Extra QQ fields are preserved on the object.
+ */
+export interface QQGroupMuteSetting {
+  global_rule?: QQGroupMuteGlobalRule;
+  members?: QQGroupMutedMember[];
+}
+
+/** One member mute add/update/delete in a batch (max 10; ordinary members only). */
+export interface QQGroupMuteMemberOp {
+  member_openid: string;
+  mute_expire_at?: string;
+  op: QQGroupMuteMemberOpType;
+}
+
+/** POST `/v2/groups/{group_openid}/restrict_chat_setting` body. */
+export interface QQSetGroupMemberMuteRequest {
+  members: QQGroupMuteMemberOp[];
+}
+
+/** Admin Q&A pair on a join request. */
+export interface QQGroupJoinRequestReviewQA {
+  answer?: string;
+  question?: string;
+}
+
+/** Join-request verification payload. */
+export interface QQGroupJoinRequestVerifyInfo {
+  method?: QQGroupJoinVerifyMethod | string;
+  review_qa_list?: QQGroupJoinRequestReviewQA[];
+  verify_message?: string;
+}
+
+/** Downlink-only auto-approval metadata. Official docs typo this as `AutoAppproved`. */
+export interface QQGroupJoinRequestAutoApproved {
+  strategy_id?: string;
+}
+
+/** One pending (or listed) group join request. */
+export interface QQGroupJoinRequest {
+  apply_at?: string;
+  apply_source?: QQGroupJoinApplySource | string;
+  auto_approved?: QQGroupJoinRequestAutoApproved;
+  bot?: boolean;
+  invited_by?: string;
+  join_request_id: string;
+  member_openid: string;
+  risk_tips?: string;
+  union_openid?: string;
+  username?: string;
+  verify_info?: QQGroupJoinRequestVerifyInfo;
+}
+
+/** GET `/v2/groups/{group_openid}/join_request_list` response. Empty `next_cursor` is last page. */
+export interface QQGroupJoinRequestList {
+  list?: QQGroupJoinRequest[];
+  next_cursor?: string;
+}
+
+/** Cursor/limit pagination for join-request and strategy list APIs. */
+export interface QQGroupListQuery {
+  cursor?: string;
+  limit?: number;
+}
+
+/** POST `/v2/groups/{group_openid}/approval_join_request/{member_openid}` body. */
+export interface QQApproveGroupJoinRequestOptions {
+  add_to_member_blacklist?: boolean;
+  join_request_id: string;
+  op: QQGroupJoinRequestApprovalOp;
+  reject_reason?: string;
+}
+
+/**
+ * `GROUP_JOIN_REQUEST` dispatch body.
+ * Rides `GROUP_AND_C2C_EVENT`; only delivered when the bot is a group admin.
+ * `auto_approved.strategy_id` is present on auto-approved downlink events.
+ */
+export interface QQGroupJoinRequestEventData extends QQThreadResolvableEventData, Partial<QQGroupJoinRequest> {}
+
+/** Join auto-approval strategy record. */
+export interface QQGroupJoinApprovalStrategy {
+  created_at?: string;
+  expire_at?: string;
+  group_ids?: string[];
+  group_openids?: string[];
+  is_enable?: QQGroupJoinApprovalEnable | string;
+  remark?: string;
+  strategy_id: string;
+  updated_at?: string;
+  whitelist_user_count?: number;
+}
+
+/** GET `/v2/groups/join_approval_strategy` response. */
+export interface QQGroupJoinApprovalStrategyList {
+  next_cursor?: string;
+  strategies?: QQGroupJoinApprovalStrategy[];
+}
+
+/**
+ * POST `/v2/groups/join_approval_strategy` body.
+ * `group_openids` and `group_ids` are mutually exclusive (max 100 groups).
+ */
+export interface QQCreateGroupJoinApprovalStrategyRequest {
+  expire_at?: string;
+  group_ids?: string[];
+  group_openids?: string[];
+  is_enable?: QQGroupJoinApprovalEnable;
+  remark?: string;
+}
+
+export interface QQCreateGroupJoinApprovalStrategyResponse {
+  expire_at?: string;
+  is_enable?: QQGroupJoinApprovalEnable | string;
+  strategy_id: string;
+}
+
+export interface QQGroupJoinApprovalStrategyGroupAction {
+  group_ids?: string[];
+  group_openids?: string[];
+  op: QQGroupJoinApprovalGroupOp;
+}
+
+/** PATCH `/v2/groups/join_approval_strategy/{strategy_id}` body. */
+export interface QQUpdateGroupJoinApprovalStrategyRequest {
+  expire_at?: string;
+  group_action?: QQGroupJoinApprovalStrategyGroupAction;
+  is_enable?: QQGroupJoinApprovalEnable;
+  remark?: string;
+}
+
+export interface QQUpdateGroupJoinApprovalStrategyResponse {
+  expire_at?: string;
+  is_enable?: QQGroupJoinApprovalEnable | string;
+}
+
+/**
+ * POST `/v2/groups/join_approval_strategy/{strategy_id}/whitelist_users` body.
+ * `whitelist_users` are QQ numbers as strings (avoid number precision loss).
+ */
+export interface QQUpdateGroupJoinApprovalWhitelistRequest {
+  op: QQGroupJoinApprovalWhitelistOp;
+  whitelist_users: string[];
+}
+
+export interface QQUpdateGroupJoinApprovalWhitelistResponse {
+  strategy_id?: string;
+  updated_at?: string;
+  whitelist_user_count?: number;
 }

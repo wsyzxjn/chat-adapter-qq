@@ -52,6 +52,14 @@ import type {
   QQMediaPayload,
   QQMediaUploadRequest,
   QQMediaUploadResponse,
+  QQApproveGroupJoinRequestOptions,
+  QQCreateGroupJoinApprovalStrategyRequest,
+  QQCreateGroupJoinApprovalStrategyResponse,
+  QQGroupJoinApprovalStrategyList,
+  QQGroupJoinRequestList,
+  QQGroupListQuery,
+  QQGroupMuteMemberOp,
+  QQGroupMuteSetting,
   QQPlatformEvent,
   QQPlatformEventDataMap,
   QQPlatformEventHandler,
@@ -68,6 +76,10 @@ import type {
   QQThreadType,
   QQThreadId,
   QQC2CThreadId,
+  QQUpdateGroupJoinApprovalStrategyRequest,
+  QQUpdateGroupJoinApprovalStrategyResponse,
+  QQUpdateGroupJoinApprovalWhitelistRequest,
+  QQUpdateGroupJoinApprovalWhitelistResponse,
   QQWebhookPayload,
 } from "./types.js";
 import {
@@ -111,6 +123,22 @@ import {
   TtlSeenSet,
   uploadLocalFileChunked,
 } from "./utils/index.js";
+import {
+  buildApproveGroupJoinRequestBody,
+  buildCreateGroupJoinApprovalStrategyRequest,
+  buildSetGroupMemberMuteRequest,
+  buildUpdateGroupJoinApprovalStrategyRequest,
+  buildUpdateGroupJoinApprovalWhitelistRequest,
+  getApproveGroupJoinRequestPath,
+  getExecuteGroupJoinApprovalStrategyPath,
+  getGroupJoinApprovalStrategyCollectionPath,
+  getGroupJoinApprovalStrategyListPath,
+  getGroupJoinApprovalStrategyPath,
+  getGroupJoinApprovalWhitelistPath,
+  getGroupJoinRequestListPath,
+  getGroupMuteSettingPath,
+  resolveGroupOpenId,
+} from "./utils/group-manage.js";
 
 interface AccessTokenCache {
   expiresAt: number;
@@ -553,6 +581,146 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       ark,
       msg_type: 3,
     }));
+  }
+
+  /**
+   * Query group mute setting/status (`GET .../restrict_chat_setting`).
+   * Requires the bot to be a group admin. Changelog 20260810.
+   *
+   * `group` may be `qq:group/<group_openid>` or a raw group openid.
+   */
+  async getGroupMuteSetting(group: string): Promise<QQGroupMuteSetting> {
+    const groupOpenId = resolveGroupOpenId(this.name, group);
+    return this.apiRequest<QQGroupMuteSetting>(getGroupMuteSettingPath(groupOpenId), {
+      method: "GET",
+    });
+  }
+
+  /**
+   * Set or unset member mute in a group (`POST .../restrict_chat_setting`).
+   * Batch up to 10 ordinary members. Owner/admin/bot mutes are rejected by QQ.
+   */
+  async setGroupMemberMute(
+    group: string,
+    members: readonly QQGroupMuteMemberOp[],
+  ): Promise<Record<string, unknown>> {
+    const groupOpenId = resolveGroupOpenId(this.name, group);
+    const body = buildSetGroupMemberMuteRequest(members);
+    return this.apiRequest<Record<string, unknown>>(getGroupMuteSettingPath(groupOpenId), {
+      body: JSON.stringify(body),
+      method: "POST",
+    });
+  }
+
+  /**
+   * List pending group join requests (`GET .../join_request_list`).
+   * `limit` defaults to 20 and maxes at 100. Empty `next_cursor` is the last page.
+   */
+  async getGroupJoinRequests(group: string, query: QQGroupListQuery = {}): Promise<QQGroupJoinRequestList> {
+    const groupOpenId = resolveGroupOpenId(this.name, group);
+    return this.apiRequest<QQGroupJoinRequestList>(getGroupJoinRequestListPath(groupOpenId, query), {
+      method: "GET",
+    });
+  }
+
+  /**
+   * Approve or decline a group join request
+   * (`POST .../approval_join_request/{member_openid}`).
+   * `reject_reason` and `add_to_member_blacklist` are only valid for `decline`.
+   */
+  async approveGroupJoinRequest(
+    group: string,
+    memberOpenId: string,
+    options: QQApproveGroupJoinRequestOptions,
+  ): Promise<Record<string, unknown>> {
+    const groupOpenId = resolveGroupOpenId(this.name, group);
+    const body = buildApproveGroupJoinRequestBody(memberOpenId, options);
+    return this.apiRequest<Record<string, unknown>>(
+      getApproveGroupJoinRequestPath(groupOpenId, memberOpenId),
+      {
+        body: JSON.stringify(body),
+        method: "POST",
+      },
+    );
+  }
+
+  /**
+   * List join auto-approval strategies (`GET /v2/groups/join_approval_strategy`).
+   */
+  async getGroupJoinApprovalStrategies(query: QQGroupListQuery = {}): Promise<QQGroupJoinApprovalStrategyList> {
+    return this.apiRequest<QQGroupJoinApprovalStrategyList>(getGroupJoinApprovalStrategyListPath(query), {
+      method: "GET",
+    });
+  }
+
+  /**
+   * Create a join auto-approval strategy (`POST /v2/groups/join_approval_strategy`).
+   * Provide exactly one of `group_openids` or `group_ids` (max 100 groups).
+   */
+  async createGroupJoinApprovalStrategy(
+    data: QQCreateGroupJoinApprovalStrategyRequest,
+  ): Promise<QQCreateGroupJoinApprovalStrategyResponse> {
+    const body = buildCreateGroupJoinApprovalStrategyRequest(data);
+    return this.apiRequest<QQCreateGroupJoinApprovalStrategyResponse>(
+      getGroupJoinApprovalStrategyCollectionPath(),
+      {
+        body: JSON.stringify(body),
+        method: "POST",
+      },
+    );
+  }
+
+  /**
+   * Update a join auto-approval strategy (`PATCH /v2/groups/join_approval_strategy/{strategy_id}`).
+   */
+  async updateGroupJoinApprovalStrategy(
+    strategyId: string,
+    data: QQUpdateGroupJoinApprovalStrategyRequest,
+  ): Promise<QQUpdateGroupJoinApprovalStrategyResponse> {
+    const body = buildUpdateGroupJoinApprovalStrategyRequest(data);
+    return this.apiRequest<QQUpdateGroupJoinApprovalStrategyResponse>(
+      getGroupJoinApprovalStrategyPath(strategyId),
+      {
+        body: JSON.stringify(body),
+        method: "PATCH",
+      },
+    );
+  }
+
+  /**
+   * Delete a join auto-approval strategy (`DELETE /v2/groups/join_approval_strategy/{strategy_id}`).
+   */
+  async deleteGroupJoinApprovalStrategy(strategyId: string): Promise<Record<string, unknown>> {
+    return this.apiRequest<Record<string, unknown>>(getGroupJoinApprovalStrategyPath(strategyId), {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * Execute a join auto-approval strategy (`POST .../join_approval_strategy/{strategy_id}/execute`).
+   */
+  async executeGroupJoinApprovalStrategy(strategyId: string): Promise<Record<string, unknown>> {
+    return this.apiRequest<Record<string, unknown>>(getExecuteGroupJoinApprovalStrategyPath(strategyId), {
+      method: "POST",
+    });
+  }
+
+  /**
+   * Add or remove whitelist QQ numbers on a join auto-approval strategy.
+   * Pass QQ numbers as strings. Batch max 10,000.
+   */
+  async updateGroupJoinApprovalWhitelist(
+    strategyId: string,
+    data: QQUpdateGroupJoinApprovalWhitelistRequest,
+  ): Promise<QQUpdateGroupJoinApprovalWhitelistResponse> {
+    const body = buildUpdateGroupJoinApprovalWhitelistRequest(data);
+    return this.apiRequest<QQUpdateGroupJoinApprovalWhitelistResponse>(
+      getGroupJoinApprovalWhitelistPath(strategyId),
+      {
+        body: JSON.stringify(body),
+        method: "POST",
+      },
+    );
   }
 
   private async postPayload(

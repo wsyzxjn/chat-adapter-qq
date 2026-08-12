@@ -91,10 +91,23 @@ export const QQ_INTENTS = {
 /**
  * Default gateway intents for this adapter's current C2C/GROUP scope.
  * Includes `MESSAGE_AUDIT` so HTTP 201/202 public/active sends can receive
- * `MESSAGE_AUDIT_PASS` / `MESSAGE_AUDIT_REJECT`. Override with `socketMode.intents`.
+ * `MESSAGE_AUDIT_PASS` / `MESSAGE_AUDIT_REJECT`. `GROUP_JOIN_REQUEST` rides
+ * `GROUP_AND_C2C_EVENT` (bot must be a group admin to receive it).
+ * Override with `socketMode.intents`.
  */
 export const DEFAULT_GATEWAY_INTENTS =
   QQ_INTENTS.GROUP_AND_C2C_EVENT | QQ_INTENTS.INTERACTION | QQ_INTENTS.MESSAGE_AUDIT;
+
+/** Max members per `setGroupMemberMute` request (ordinary members only). */
+export const QQ_GROUP_MUTE_MEMBER_BATCH_LIMIT = 10;
+/** Default `limit` for join-request and join-strategy list APIs. */
+export const QQ_GROUP_JOIN_REQUEST_DEFAULT_LIMIT = 20;
+/** Max `limit` for join-request and join-strategy list APIs. */
+export const QQ_GROUP_JOIN_REQUEST_MAX_LIMIT = 100;
+/** Max groups associated with one join auto-approval strategy. */
+export const QQ_GROUP_JOIN_APPROVAL_STRATEGY_MAX_GROUPS = 100;
+/** Max QQ numbers in one whitelist add/del request. */
+export const QQ_GROUP_JOIN_APPROVAL_WHITELIST_BATCH_LIMIT = 10_000;
 
 /** QQ webhook signature header. */
 export const SIGNATURE_HEADER = "X-Signature-Ed25519";
@@ -125,6 +138,7 @@ export const PLATFORM_EVENT_TYPES = [
   "FRIEND_DEL",
   "GROUP_ADD_ROBOT",
   "GROUP_DEL_ROBOT",
+  "GROUP_JOIN_REQUEST",
   "GROUP_MSG_REJECT",
   "GROUP_MSG_RECEIVE",
   "MESSAGE_AUDIT_PASS",

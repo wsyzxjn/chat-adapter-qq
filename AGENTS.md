@@ -67,6 +67,24 @@
 
 如要扩展频道场景，先统一 ID 设计，再改 `encodeThreadId/decodeThreadId/channelIdFromThreadId`。
 
+### 3.5 群管理（changelog 20260810）
+
+QQ 专有方法挂在适配器实例上（与 `postArk` / `postQQMessage` 相同），不要发明 Chat SDK 标准 API。
+
+- 禁言：`getGroupMuteSetting`、`setGroupMemberMute`（单次最多 10 个普通成员）
+- 入群申请：`getGroupJoinRequests`（cursor/limit，默认 20、最大 100）、`approveGroupJoinRequest`（`decline` 才允许 `reject_reason` / `add_to_member_blacklist`）
+- 入群自动审批策略：`getGroupJoinApprovalStrategies`、`createGroupJoinApprovalStrategy`、`updateGroupJoinApprovalStrategy`、`deleteGroupJoinApprovalStrategy`、`executeGroupJoinApprovalStrategy`、`updateGroupJoinApprovalWhitelist`
+- 事件 `GROUP_JOIN_REQUEST` 走现有 `qq.onEvent`（webhook + socket 共用）；intent 为 `GROUP_AND_C2C_EVENT`；仅群管理员机器人可收到；下行自动通过时保留 `auto_approved.strategy_id`
+- 群标识接受 `qq:group/<group_openid>` 或原始 `group_openid`
+- 管理接口要求机器人为群管理员；权限失败走现有 HTTP 状态码 + QQ `code/errcode` 映射
+
+官方 wiki 的群管理目录页目前几乎为空；HTTP 路径以 changelog 20260810 与 OpenAPI 形状为准：
+
+- `GET|POST /v2/groups/{group_openid}/restrict_chat_setting`
+- `GET /v2/groups/{group_openid}/join_request_list`
+- `POST /v2/groups/{group_openid}/approval_join_request/{member_openid}`
+- `/v2/groups/join_approval_strategy` 及 `/{strategy_id}`、`/execute`、`/whitelist_users`
+
 ## 4. 错误处理规范
 
 - 优先使用 `chat` 标准错误类型（`ChatError`, `RateLimitError`, `NotImplementedError`）
@@ -81,6 +99,8 @@
 - modal / options load
 - schedule message
 - QQ Embed 发送
+- 群基本信息 / 机器人群内状态（`getGroupInfo` / `getGroupBotState`，官方白名单 + 30 QPM）
+- 频道（guild/channel）管理与消息
 
 以上必须继续显式 `NotImplementedError`，不要静默吞掉。Chat SDK `files` 已实现，走与附件相同的上传/发送路径。
 
@@ -107,3 +127,4 @@ pnpm run test:bot
    - `op=13` 正常挑战应答
    - 非支持事件在 strict/non-strict 模式行为正确
    - `INTERACTION_CREATE` 先 ACK interaction，再派发 action
+   - `GROUP_JOIN_REQUEST` 走 `onEvent`，不进入 `processMessage`

@@ -12,6 +12,7 @@ QQ 机器人开放平台 API v2 的 [Chat SDK](https://www.npmjs.com/package/cha
 - 将按钮回调映射到 `chat.onAction`
 - 支持 `chat.onDirectMessage`、`chat.openDM`、消息撤回和 Chat SDK 状态持久化历史
 - 保留 QQ 原始 payload，方便读取平台特有字段
+- 群禁言、入群申请审批、入群自动审批策略，以及 `GROUP_JOIN_REQUEST` 事件
 
 ## 安装
 
@@ -140,6 +141,22 @@ const unsubscribe = qq.onEvent(async (event) => {
 
 主动/public 消息被 QQ 以 HTTP 201/202 异步接受时，返回消息的 `raw._chat_delivery_status` 为 `accepted`，并保留 `_chat_http_status`、`_chat_async_code` 和 `_chat_async_message`。后续结果可通过 `MESSAGE_AUDIT_PASS` / `MESSAGE_AUDIT_REJECT` 监听。Socket Mode 默认已包含 `QQ_INTENTS.MESSAGE_AUDIT`。
 
+`GROUP_JOIN_REQUEST`（changelog 20260810）也走 `qq.onEvent`。它挂在 `GROUP_AND_C2C_EVENT` 上，只有机器人为**群管理员**时才会下发。Webhook 与 Socket Mode 共用同一套解析。自动审批通过的下行事件会带 `auto_approved.strategy_id`：
+
+```ts
+qq.onEvent("GROUP_JOIN_REQUEST", async (event) => {
+  const request = event.data;
+  console.log(event.threadId, request?.join_request_id, request?.auto_approved?.strategy_id);
+
+  if (request?.member_openid && request.join_request_id && !request.auto_approved) {
+    await qq.approveGroupJoinRequest(event.threadId ?? request.group_openid!, request.member_openid, {
+      op: "approve",
+      join_request_id: request.join_request_id,
+    });
+  }
+});
+```
+
 ## QQ 专有发送
 
 通用文本、Markdown、Card 和媒体附件走 `thread.post()`：
@@ -221,6 +238,60 @@ C2C `stream()` 在存在入站 `msg_id` 被动上下文时使用 QQ 原生 `stre
 
 Embed 在 QQ 官方 C2C/GROUP 场景下不支持，当前不适配。
 
+## 群管理
+
+changelog 20260810 的群禁言、入群申请和入群自动审批策略挂在适配器实例上，不是 Chat SDK 标准 API。调用方需要机器人为**群管理员**；QQ 拒绝时按 HTTP 状态码 + `code`/`errcode` 映射为 `ChatError`（例如 `PERMISSION_DENIED`）。`group` 参数可以是 `qq:group/<group_openid>` 或原始 group openid。
+
+```ts
+const setting = await qq.getGroupMuteSetting("qq:group/<group_openid>");
+console.log(setting.global_rule, setting.members);
+
+await qq.setGroupMemberMute("qq:group/<group_openid>", [
+  {
+    op: "add",
+    member_openid: "<member_openid>",
+    mute_expire_at: "2026-08-12T12:00:00+08:00",
+  },
+]);
+
+await qq.setGroupMemberMute("<group_openid>", [
+  { op: "del", member_openid: "<member_openid>" },
+]);
+
+const page = await qq.getGroupJoinRequests("<group_openid>", {
+  cursor: "",
+  limit: 20,
+});
+const request = page.list?.[0];
+if (request) {
+  await qq.approveGroupJoinRequest("<group_openid>", request.member_openid, {
+    op: "approve",
+    join_request_id: request.join_request_id,
+  });
+  await qq.approveGroupJoinRequest("<group_openid>", request.member_openid, {
+    op: "decline",
+    join_request_id: request.join_request_id,
+    reject_reason: "未通过入群验证",
+    add_to_member_blacklist: true,
+  });
+}
+
+const strategy = await qq.createGroupJoinApprovalStrategy({
+  group_openids: ["<group_openid>"],
+  is_enable: "on",
+  remark: "活动白名单",
+});
+await qq.updateGroupJoinApprovalWhitelist(strategy.strategy_id, {
+  op: "add",
+  whitelist_users: ["1234567"],
+});
+await qq.executeGroupJoinApprovalStrategy(strategy.strategy_id);
+```
+
+单次禁言最多 10 个普通成员，不能操作群主、管理员或机器人。入群申请列表 `limit` 默认 20、最大 100；`next_cursor` 为空表示末页。创建策略时 `group_openids` 与 `group_ids` 二选一，最多 100 个群；白名单 QQ 号必须用字符串。
+
+官方 wiki 的[群管理](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/group/manage/)目录页目前几乎为空；事件形状以 [用户申请加群事件](https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/group_join_request.html) 为准。
+
 ## 群消息、命令与提及
 
 适配器支持 `GROUP_AT_MESSAGE_CREATE` 和 `GROUP_MESSAGE_CREATE`。QQ 侧开启普通群消息事件后，不带 @ 的群消息也会进入 Chat SDK message 路由；是否响应由 `onNewMessage(pattern)` 或订阅状态决定。
@@ -283,6 +354,8 @@ qq:guild/<guild_id>/<channel_id>
 - modal / options load
 - schedule message
 - QQ Embed 发送
+- 群基本信息 / 机器人群内状态（官方白名单接口）
+- 频道（guild/channel）管理与消息
 
 `fetchMessages` / `fetchMessage` 直接调用适配器时仍读取本进程缓存，不是 QQ 服务端历史消息查询。适配器同时声明了 `persistThreadHistory = true`，因此通过 Chat SDK 运行时接收/发送的线程历史会写入所配置的 state adapter，可跨进程恢复（持久性取决于所选 state adapter；`state-memory` 本身只在内存中保存）。
 
@@ -400,3 +473,5 @@ pnpm run test:c2c-proactive -- <openid> "测试消息"
 - https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/sign.html
 - https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/event-emit.html
 - https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/trans/msg-btn.html
+- https://bot.q.qq.com/wiki/develop/api-v2/changelog.html
+- https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/group_join_request.html
