@@ -6,12 +6,13 @@ import { describe, it, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 
 const APP_ID = "11111111";
-const BOT_SECRET = "DG5g3B4j9X2KOErG";
+const BOT_SECRET = "test-client-secret";
 const TOKEN_ENDPOINT = "https://tokens.example.test/app/getAppAccessToken";
-const GROUP_OPENID = "30584554AA2BF4E72BD3B8F27A70339D";
-const MEMBER_OPENID = "FE003FAF76C4817251FDC128A16753BB";
-const JOIN_REQUEST_ID =
-  "AVKiFWpdy0-q0rfCkpQFbWB9GvX7QPIe9hlsbVeO6TiurrZw1DHP0sXGnbUR4Xm79tKNpfl4zZynxeibVwwUD6h96RqiFB-4V6p5FKGXfqInOuQQSf5WwXr8lyIsn6yeaMwEI1KSuTTMBMNe6WN8bDtKg2REXTcF";
+const GROUP_OPENID = "test-group-openid-1";
+const MEMBER_OPENID = "test-member-openid-1";
+const MEMBER_OPENID_2 = "test-member-openid-2";
+const JOIN_REQUEST_ID = "join-request-id-1";
+const STRATEGY_ID = "strategy-id-1";
 
 type TestQQAdapterConfig =
   | (Partial<Omit<QQSocketModeAdapterConfig, "appId" | "clientSecret" | "mode">> & { mode: "socket" })
@@ -110,7 +111,7 @@ const JOIN_REQUEST_EVENT = {
   apply_at: "2026-08-05T17:32:52+08:00",
   apply_source: "self_apply",
   auto_approved: {
-    strategy_id: "st_7c0b77d442",
+    strategy_id: STRATEGY_ID,
   },
   group_openid: GROUP_OPENID,
   join_request_id: JOIN_REQUEST_ID,
@@ -167,7 +168,7 @@ describe("QQAdapter group management APIs", () => {
         op: "add",
       },
       {
-        member_openid: "DE538D0B23260BFEC30EA4A17C3A71B1",
+        member_openid: MEMBER_OPENID_2,
         op: "del",
       },
     ]);
@@ -180,7 +181,7 @@ describe("QQAdapter group management APIs", () => {
           op: "add",
         },
         {
-          member_openid: "DE538D0B23260BFEC30EA4A17C3A71B1",
+          member_openid: MEMBER_OPENID_2,
           op: "del",
         },
       ],
@@ -371,19 +372,19 @@ describe("QQAdapter group management APIs", () => {
       "https://api.sgroup.qq.com/v2/groups/join_approval_strategy?limit=20": () =>
         Response.json({
           next_cursor: "",
-          strategies: [{ is_enable: "on", strategy_id: "st_7c0b77d442" }],
+          strategies: [{ is_enable: "on", strategy_id: "strategy-id-1" }],
         }),
       "https://api.sgroup.qq.com/v2/groups/join_approval_strategy": (init) => {
         if (init?.method === "POST") {
           return Response.json({
             expire_at: "2026-09-01T00:00:00+08:00",
             is_enable: "on",
-            strategy_id: "st_7c0b77d442",
+            strategy_id: STRATEGY_ID,
           });
         }
         return Response.json({ code: 404 }, { status: 404 });
       },
-      "https://api.sgroup.qq.com/v2/groups/join_approval_strategy/st_7c0b77d442": (init) => {
+      "https://api.sgroup.qq.com/v2/groups/join_approval_strategy/strategy-id-1": (init) => {
         if (init?.method === "PATCH") {
           return Response.json({ is_enable: "off" });
         }
@@ -392,11 +393,11 @@ describe("QQAdapter group management APIs", () => {
         }
         return Response.json({ code: 404 }, { status: 404 });
       },
-      "https://api.sgroup.qq.com/v2/groups/join_approval_strategy/st_7c0b77d442/execute": () =>
+      "https://api.sgroup.qq.com/v2/groups/join_approval_strategy/strategy-id-1/execute": () =>
         Response.json({}),
-      "https://api.sgroup.qq.com/v2/groups/join_approval_strategy/st_7c0b77d442/whitelist_users": () =>
+      "https://api.sgroup.qq.com/v2/groups/join_approval_strategy/strategy-id-1/whitelist_users": () =>
         Response.json({
-          strategy_id: "st_7c0b77d442",
+          strategy_id: STRATEGY_ID,
           whitelist_user_count: 2,
         }),
     });
@@ -407,7 +408,7 @@ describe("QQAdapter group management APIs", () => {
       is_enable: "on",
       remark: "活动白名单",
     });
-    assert.equal(created.strategy_id, "st_7c0b77d442");
+    assert.equal(created.strategy_id, "strategy-id-1");
     assert.deepStrictEqual(requestJsonBody(fetchMock.mock.calls[1]!), {
       group_openids: [GROUP_OPENID],
       is_enable: "on",
@@ -415,15 +416,15 @@ describe("QQAdapter group management APIs", () => {
     });
 
     const listed = await adapter.getGroupJoinApprovalStrategies();
-    assert.equal(listed.strategies?.[0]?.strategy_id, "st_7c0b77d442");
+    assert.equal(listed.strategies?.[0]?.strategy_id, "strategy-id-1");
 
-    await adapter.updateGroupJoinApprovalStrategy("st_7c0b77d442", { is_enable: "off" });
-    await adapter.updateGroupJoinApprovalWhitelist("st_7c0b77d442", {
+    await adapter.updateGroupJoinApprovalStrategy("strategy-id-1", { is_enable: "off" });
+    await adapter.updateGroupJoinApprovalWhitelist("strategy-id-1", {
       op: "add",
       whitelist_users: ["1234567", "1234568"],
     });
-    await adapter.executeGroupJoinApprovalStrategy("st_7c0b77d442");
-    await adapter.deleteGroupJoinApprovalStrategy("st_7c0b77d442");
+    await adapter.executeGroupJoinApprovalStrategy("strategy-id-1");
+    await adapter.deleteGroupJoinApprovalStrategy("strategy-id-1");
 
     await assertChatError(
       adapter.createGroupJoinApprovalStrategy({
@@ -434,7 +435,7 @@ describe("QQAdapter group management APIs", () => {
       /exactly one of group_openids or group_ids/,
     );
     await assertChatError(
-      adapter.updateGroupJoinApprovalWhitelist("st_7c0b77d442", {
+      adapter.updateGroupJoinApprovalWhitelist("strategy-id-1", {
         op: "add",
         whitelist_users: [1234567 as unknown as string],
       }),
@@ -477,7 +478,7 @@ describe("QQAdapter GROUP_JOIN_REQUEST events", () => {
     assertMatchObject(onEvent.mock.calls[0]?.arguments[0], {
       data: {
         auto_approved: {
-          strategy_id: "st_7c0b77d442",
+          strategy_id: STRATEGY_ID,
         },
         group_openid: GROUP_OPENID,
         join_request_id: JOIN_REQUEST_ID,
@@ -505,7 +506,7 @@ describe("QQAdapter GROUP_JOIN_REQUEST events", () => {
     assertMatchObject(onEvent.mock.calls[0]?.arguments[0], {
       data: {
         auto_approved: {
-          strategy_id: "st_7c0b77d442",
+          strategy_id: STRATEGY_ID,
         },
         verify_info: {
           method: "verify_message",
