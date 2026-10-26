@@ -350,11 +350,11 @@ export class QQGatewayClient {
 
   private getClosePolicy(code: number): "identify" | "resume" | "stop" {
     // Invalid session/sequence: the next connection must start a new session.
-    if (code === 4006 || code === 4007) {
+    if (code === 4006 || code === 4007 || (code >= 4900 && code <= 4913)) {
       return "identify";
     }
     // Authentication, sharding, version and intent configuration failures are not recoverable by reconnecting.
-    if ([4004, 4010, 4011, 4012, 4013, 4014, 4914, 4915].includes(code)) {
+    if ([4001, 4002, 4004, 4010, 4011, 4012, 4013, 4014, 4914, 4915].includes(code)) {
       return "stop";
     }
     // 4009 and network/server closes retain the latest session for opcode 6 Resume.

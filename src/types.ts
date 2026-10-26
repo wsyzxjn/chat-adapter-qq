@@ -185,6 +185,10 @@ export interface QQMessageAuthor {
   user_openid?: string;
   /** Cross-application union openid when returned by QQ. */
   union_openid?: string;
+  /** Cross-application user account when returned by QQ. */
+  union_user_account?: string;
+  /** Member role in the group. */
+  member_role?: "member" | "admin" | "owner";
   /** Username/handle. */
   username?: string;
 }
@@ -210,19 +214,11 @@ export interface QQMessageAttachment {
 }
 
 /** QQ mention payload from group message events. */
-export interface QQMessageMention {
-  /** Bot/user numeric id when provided by QQ. */
-  id?: string;
-  /** Whether the mentioned user is a bot. */
-  bot?: boolean;
-  /** Member openid in group scene. */
-  member_openid?: string;
+export interface QQMessageMention extends QQMessageAuthor {
   /** Display nickname for the mentioned user. */
   nickname?: string;
   /** Mention scope. */
   scope?: "all" | "single" | string;
-  /** User openid when provided by QQ. */
-  user_openid?: string;
   /** Whether this mention targets the current bot. */
   is_you?: boolean;
 }
@@ -230,9 +226,21 @@ export interface QQMessageMention {
 export interface QQMessageElement {
   [key: string]: unknown;
   content?: string;
+  attachments?: QQMessageAttachment[];
+  author?: QQMessageAuthor;
+  ark_data?: QQArkData;
+  msg_elements?: QQMessageElement[];
   message_type?: number;
   msg_idx?: string;
   type?: string;
+}
+
+/** Structured inbound card; distinct from the outbound ARK template payload. */
+export interface QQArkData {
+  ark_type?: "tuwen" | "feed" | "miniapp" | "map" | "contact_card" | "video_share" | "music_together" | "picture";
+  ark_name?: string;
+  prompt?: string;
+  fields?: Record<string, unknown>;
 }
 
 export interface QQMessageScene {
@@ -248,6 +256,7 @@ export interface QQQuotedMessage {
 
 export interface QQMarkdownPayload {
   content?: string;
+  force_verify_image_resource?: boolean;
   custom_template_id?: string;
   params?: Array<{
     key: string;
@@ -312,8 +321,12 @@ export interface QQMediaPayload {
 
 export interface QQMediaUploadRequest {
   file_data?: string;
+  /** Required for binary and multipart uploads. */
+  file_name?: string;
   file_type: number;
   srv_send_msg: boolean;
+  /** Upload task returned by upload_prepare for the multipart merge request. */
+  upload_id?: string;
   url?: string;
 }
 
@@ -322,6 +335,7 @@ export interface QQMediaUploadResponse {
   file_uuid?: string;
   id?: string;
   ttl?: number;
+  raw_url?: string;
 }
 
 /** Shared raw message shape used for inbound and outbound normalization. */
@@ -348,6 +362,8 @@ export interface QQBaseMessage {
   _chat_quoted_message?: QQQuotedMessage;
   /** File attachments. */
   attachments?: QQMessageAttachment[];
+  /** Structured card data for message_type=3. */
+  ark_data?: QQArkData;
   /** Author metadata. */
   author?: QQMessageAuthor;
   /** Message text content. */
@@ -356,6 +372,8 @@ export interface QQBaseMessage {
   edited_timestamp?: string;
   /** Passive reply context event id. */
   event_id?: string;
+  /** Reference index returned by outbound message APIs. */
+  ext_info?: { ref_idx: string };
   /** Legacy/alternate group id field from QQ payloads. */
   group_id?: string;
   /** Group openid field from QQ payloads. */
@@ -388,6 +406,14 @@ export interface QQInteractionPayload {
       button_data?: string;
       button_id?: string;
       feature_id?: string;
+      feedback_opt?: "LIKE" | "UNLIKE";
+      checked?: number;
+      action?: string;
+      message_scene?: QQMessageScene;
+      authorize_data?: {
+        opt_scene?: "setting" | "dialog";
+        scope?: "c2c_push" | "group_push";
+      };
       message_id?: string;
       user_id?: string;
     };
@@ -403,6 +429,8 @@ export interface QQInteractionPayload {
   require_mention?: boolean;
   scene?: "c2c" | "group" | string;
   timestamp?: string;
+  /** 11=button, 12=menu; other values are platform-specific interactions. */
+  type?: number;
   user_openid?: string;
   version?: number;
 }
@@ -416,10 +444,27 @@ export interface QQThreadResolvableEventData {
   msg_id?: string;
   op_member_openid?: string;
   openid?: string;
-  scene?: number;
+  scene?: number | string;
   scene_param?: string;
   timestamp?: number | string;
   user_openid?: string;
+}
+
+export interface QQGroupMemberEventData extends QQThreadResolvableEventData {
+  member_openid?: string;
+}
+
+export interface QQGroupJoinRequestEventData extends QQGroupMemberEventData {
+  join_request_id?: string;
+  risk_tips?: string;
+  union_openid?: string;
+  username?: string;
+  apply_at?: string;
+  apply_source?: "self_apply" | "invited";
+  invited_by?: string;
+  bot?: boolean;
+  verify_info?: QQJoinVerifyInfo;
+  auto_approved?: { strategy_id: string };
 }
 
 /** Async message audit result dispatched by QQ for proactive/public messages. */
@@ -443,6 +488,11 @@ export type QQPlatformEventType =
   | "GROUP_DEL_ROBOT"
   | "GROUP_MSG_REJECT"
   | "GROUP_MSG_RECEIVE"
+  | "GROUP_JOIN_REQUEST"
+  | "GROUP_MEMBER_ADD"
+  | "GROUP_MEMBER_REMOVE"
+  | "INTERACTION_CREATE"
+  | "SUBSCRIBE_MESSAGE_STATUS"
   | "MESSAGE_AUDIT_PASS"
   | "MESSAGE_AUDIT_REJECT";
 
@@ -465,6 +515,11 @@ export interface QQPlatformEventDataMap {
   GROUP_DEL_ROBOT: QQThreadResolvableEventData;
   GROUP_MSG_REJECT: QQThreadResolvableEventData;
   GROUP_MSG_RECEIVE: QQThreadResolvableEventData;
+  GROUP_JOIN_REQUEST: QQGroupJoinRequestEventData;
+  GROUP_MEMBER_ADD: QQGroupMemberEventData;
+  GROUP_MEMBER_REMOVE: QQGroupMemberEventData;
+  INTERACTION_CREATE: QQInteractionPayload;
+  SUBSCRIBE_MESSAGE_STATUS: QQSubscribeMessageStatusEventData;
   MESSAGE_AUDIT_PASS: QQMessageAuditEventData;
   MESSAGE_AUDIT_REJECT: QQMessageAuditEventData;
 }
@@ -504,7 +559,7 @@ export interface QQInputNotifyPayload {
   input_second: number;
 }
 
-/** QQ channel message reference payload. */
+/** QQ quoted-message reference payload. */
 export interface QQMessageReference {
   /** Ignore a missing/inaccessible referenced message instead of failing the send. */
   ignore_get_message_error?: boolean;
@@ -514,6 +569,8 @@ export interface QQMessageReference {
 
 /** QQ-specific options that are intentionally outside Chat SDK's portable message shape. */
 export interface QQSendMessageOptions {
+  /** Reject Markdown messages if QQ cannot transfer their image resources. */
+  forceVerifyImageResource?: boolean;
   /** Send a C2C proactive wake-up message. Mutually exclusive with passive reply context. */
   isWakeup?: boolean;
   /** QQ channel quoted-message rendering options. */
@@ -546,7 +603,7 @@ export interface QQSendMessageRequest {
   msg_id?: string;
   /** Passive reply sequence in the same msg_id context. */
   msg_seq?: number;
-  /** QQ msg type: 0=text, 6=input_notify. */
+  /** QQ msg type: 0=text, 2=Markdown, 3=ARK, 6=input notify, 7=media. */
   msg_type: number;
 }
 
@@ -577,10 +634,10 @@ export interface QQStreamMessageRequest {
   input_state: 1 | 10;
   /** Content format type. */
   content_type: "markdown";
-  /** Current full message content (replace mode). */
+  /** Current full message content (replace mode); must preserve the already-sent prefix. */
   content_raw: string;
-  /** Passive reply context event id. */
-  event_id: string;
+  /** Passive reply context event id; mutually exclusive with msg_id. */
+  event_id?: string;
   /** Passive reply context message id. */
   msg_id: string;
   /** Passive reply sequence. */
@@ -601,4 +658,450 @@ export interface QQStreamMessageResponse {
   ext_info?: { ref_idx: string };
   /** Remaining message length. */
   remain_msg_len?: number;
+}
+
+/** Binary input accepted by QQ upload helpers. */
+export type QQBinaryData = Blob | ArrayBuffer | ArrayBufferView;
+
+export type QQMediaImageMimeType =
+  | "image/gif"
+  | "image/jpeg"
+  | "image/png"
+  | "image/webp";
+
+export interface QQMediaImageUploadInput {
+  data: QQBinaryData;
+  /** File name including an extension that matches `mimeType`. */
+  fileName: string;
+  mimeType: QQMediaImageMimeType;
+}
+
+export interface QQMediaImage {
+  image_id: string;
+  preview_url?: string;
+  ttl: number;
+  url: string;
+}
+
+export interface QQMediaImageListOptions {
+  cursor?: string;
+}
+
+export interface QQMediaImageList {
+  images: Array<{
+    created_at: number;
+    expires_at: number;
+    file_name: string;
+    image_id: string;
+    preview_url?: string;
+    url: string;
+  }>;
+  next_cursor?: string;
+  total: number;
+}
+
+export interface QQMultipartUploadPrepareRequest {
+  file_name: string;
+  file_size: string;
+  file_type: number;
+  md5: string;
+  md5_10m: string;
+  sha1: string;
+}
+
+export interface QQMultipartUploadPart {
+  block_size: string;
+  index: number;
+  presigned_url: string;
+}
+
+export interface QQMultipartUploadConfig {
+  concurrency?: number;
+  retry_delay?: number;
+  retry_timeout?: number;
+}
+
+export interface QQMultipartUploadPrepareResponse {
+  block_size: string;
+  parts: QQMultipartUploadPart[];
+  upload_config?: QQMultipartUploadConfig;
+  upload_id: string;
+}
+
+export interface QQMultipartUploadPartFinishRequest {
+  block_size: string;
+  md5: string;
+  part_index: number;
+  upload_id: string;
+}
+
+export interface QQMenuSwitch {
+  default: boolean;
+  switch_id: string;
+}
+
+interface QQMenuItemBase {
+  name: string;
+}
+
+export interface QQMenuSwitchItem extends QQMenuItemBase {
+  switch: QQMenuSwitch;
+  type: "switch";
+}
+
+export interface QQMenuSendMessageItem extends QQMenuItemBase {
+  send_message: string;
+  type: "send_message";
+}
+
+export interface QQMenuLinkItem extends QQMenuItemBase {
+  link: string;
+  type: "link";
+}
+
+export interface QQMenuFolderItem extends QQMenuItemBase {
+  sub_menu_items: QQMenuSubItem[];
+  type: "menu";
+}
+
+export type QQMenuItem =
+  | QQMenuFolderItem
+  | QQMenuLinkItem
+  | QQMenuSendMessageItem
+  | QQMenuSwitchItem;
+
+export type QQMenuSubItem =
+  | {
+      link: string;
+      name: string;
+      type: "link";
+    }
+  | {
+      name: string;
+      send_message: string;
+      type: "send_message";
+    };
+
+export interface QQMenu {
+  items: QQMenuItem[];
+}
+
+export interface QQMenuResponse {
+  menu?: QQMenu | null;
+  version: number;
+}
+
+export interface QQMenuUpdateResponse {
+  version: number;
+}
+
+export type QQPanelScope = "c2c" | "group" | "channel" | "dm";
+export type QQPanelTargetType = "all" | "specific";
+
+export type QQPanelItem =
+  | {
+      desc?: string;
+      name: string;
+      only_admin?: boolean;
+      type: "command";
+    }
+  | {
+      desc?: string;
+      link: string;
+      name: string;
+      only_admin?: boolean;
+      type: "link";
+    };
+
+export interface QQCommandPanel {
+  items: QQPanelItem[];
+  remark?: string;
+  version?: number;
+}
+
+export interface QQCommandPanelCreateInput {
+  group_openids?: string[];
+  panel: QQCommandPanel;
+  scope: QQPanelScope;
+  target_type?: QQPanelTargetType;
+  user_openids?: string[];
+}
+
+export interface QQCommandPanelCreateResponse {
+  panel_id: string;
+}
+
+export interface QQCommandPanelListOptions {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface QQCommandPanelRecord {
+  created_at: string;
+  panel: QQCommandPanel;
+  panel_id: string;
+  scope: QQPanelScope;
+  target_type: QQPanelTargetType;
+  updated_at: string;
+  version: number;
+}
+
+export interface QQCommandPanelList {
+  is_end: boolean;
+  next_cursor?: string;
+  records: QQCommandPanelRecord[];
+}
+
+export interface QQCommandPanelDetail extends QQCommandPanelRecord {
+  group_openids?: string[];
+  user_openids?: string[];
+}
+
+export interface QQCommandPanelUpdateResponse {
+  version: number;
+}
+
+export interface QQCommandPanelTargetUpdateInput {
+  group_openids?: string[];
+  op: "add" | "del";
+  user_openids?: string[];
+}
+
+export interface QQGroupInfo {
+  group_class_text?: string;
+  group_finger_memo?: string;
+  group_member_num?: number;
+  group_name?: string;
+  group_openid: string;
+  group_tags?: string[];
+}
+
+export interface QQGroupBotState {
+  allow_proactive_msg?: boolean;
+  joined_at?: string;
+  member_openid?: string;
+  member_role?: "member" | "admin" | "owner";
+  recv_msg_setting?: "all" | "only_mention" | "mention_and_context";
+}
+
+export interface QQGroupMember {
+  bot?: boolean;
+  joined_at?: string;
+  member_openid: string;
+  member_role?: "member" | "admin" | "owner";
+  union_openid?: string;
+  username?: string;
+}
+
+export interface QQGroupMemberListOptions {
+  cursor?: string;
+}
+
+export interface QQGroupMemberList {
+  members: QQGroupMember[];
+  next_cursor?: string;
+}
+
+export interface QQRemoveGroupMembersInput {
+  add_to_member_blacklist?: boolean;
+  member_openids: string[];
+}
+
+export interface QQRemoveGroupMembersResponse {
+  add_to_member_blacklist_fail_openids?: string[];
+  remove_members_result: "success" | string;
+}
+
+export interface QQGroupBlacklistUser {
+  banned_at?: string;
+  bot?: boolean;
+  member_openid: string;
+  union_openid?: string;
+  username?: string;
+}
+
+export interface QQGroupBlacklistListOptions {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface QQGroupBlacklistList {
+  next_cursor?: string;
+  users: QQGroupBlacklistUser[];
+}
+
+export interface QQGroupBlacklistUpdateInput {
+  member_openids: string[];
+  op: "add" | "del";
+}
+
+export interface QQGroupBlacklistUpdateResponse {
+  fail_openids?: string[];
+}
+
+export interface QQGroupMuteScheduleRule {
+  enabled: boolean;
+  end_at: string;
+  start_at: string;
+  task_id: string;
+}
+
+export interface QQGroupMuteRecurringRule {
+  enabled: boolean;
+  end_time: string;
+  start_time: string;
+  task_id: string;
+  weekdays: number[];
+}
+
+export interface QQGroupMuteState {
+  global_rule?: {
+    mode: "none" | "always" | "schedule";
+    recurring_rules?: QQGroupMuteRecurringRule[];
+    schedule_rules?: QQGroupMuteScheduleRule[];
+  };
+  members?: Array<{
+    member_openid: string;
+    mute_expire_at: string;
+    union_openid?: string;
+    username?: string;
+  }>;
+}
+
+export interface QQGroupMemberMuteInput {
+  member_openid: string;
+  mute_expire_at?: string;
+  op: "add" | "del" | "update";
+}
+
+export interface QQGroupMemberMuteUpdateInput {
+  members: QQGroupMemberMuteInput[];
+}
+
+export interface QQJoinReviewQuestion {
+  answer: string;
+  question: string;
+}
+
+export interface QQJoinVerifyInfo {
+  method?: "verify_message" | "admin_review_qa";
+  review_qa_list?: QQJoinReviewQuestion[];
+  verify_message?: string;
+}
+
+export interface QQGroupJoinRequest {
+  apply_at?: string;
+  apply_source?: "self_apply" | "invited";
+  auto_approved?: { strategy_id: string };
+  bot?: boolean;
+  invited_by?: string;
+  join_request_id: string;
+  member_openid: string;
+  risk_tips?: string;
+  union_openid?: string;
+  username?: string;
+  verify_info?: QQJoinVerifyInfo;
+}
+
+export interface QQGroupJoinRequestListOptions {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface QQGroupJoinRequestList {
+  list: QQGroupJoinRequest[];
+  next_cursor?: string;
+}
+
+export interface QQGroupJoinRequestReviewInput {
+  add_to_member_blacklist?: boolean;
+  join_request_id?: string;
+  op: "approve" | "decline";
+  reject_reason?: string;
+}
+
+export interface QQJoinApprovalStrategy {
+  created_at?: string;
+  expire_at?: string;
+  group_ids?: number[];
+  group_openids?: string[];
+  is_enable?: "on" | "off";
+  remark?: string;
+  strategy_id: string;
+  updated_at?: string;
+  whitelist_user_count?: number;
+}
+
+export interface QQJoinApprovalStrategyListOptions {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface QQJoinApprovalStrategyList {
+  next_cursor?: string;
+  strategies: QQJoinApprovalStrategy[];
+}
+
+export interface QQJoinApprovalStrategyCreateInput {
+  expire_at?: string;
+  group_ids?: number[];
+  group_openids?: string[];
+  is_enable?: "on" | "off";
+  remark?: string;
+}
+
+export interface QQJoinApprovalStrategyCreateResponse {
+  expire_at?: string;
+  is_enable: "on" | "off";
+  strategy_id: string;
+}
+
+export interface QQJoinApprovalStrategyUpdateInput {
+  expire_at?: string;
+  group_action?: {
+    group_ids?: number[];
+    group_openids?: string[];
+    op: "add" | "del";
+  };
+  is_enable?: "on" | "off";
+  remark?: string;
+}
+
+export interface QQJoinApprovalStrategyUpdateResponse {
+  expire_at?: string;
+  is_enable: "on" | "off";
+}
+
+export interface QQJoinApprovalStrategyWhitelistInput {
+  op: "add" | "del";
+  whitelist_users: string[];
+}
+
+export interface QQJoinApprovalStrategyWhitelistResponse {
+  strategy_id: string;
+  updated_at?: string;
+  whitelist_user_count?: number;
+}
+
+export interface QQGeneratedUrlLink {
+  url: string;
+}
+
+export interface QQGeneratedUrlLinkResponse {
+  data: QQGeneratedUrlLink;
+}
+
+export interface QQSubscribeMessageTemplateResult {
+  custom_template_id?: string;
+  op: 1 | 2;
+  subscribe_id: string;
+  subscribe_ts?: number;
+  template_id?: number;
+  update_ts?: number;
+}
+
+export interface QQSubscribeMessageStatusEventData {
+  group_openid?: string;
+  openid?: string;
+  result: QQSubscribeMessageTemplateResult[];
 }

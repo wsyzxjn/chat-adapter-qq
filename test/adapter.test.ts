@@ -821,7 +821,7 @@ describe("QQAdapter interaction events", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/interactions/interaction-1") {
+      if (url === "https://api.bot.qq.com/interactions/interaction-1") {
         order.push("ack");
         return new Response(null, {
           status: 204,
@@ -976,7 +976,7 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({
           id: "sent-message-1",
           timestamp: "2026-05-09T12:00:01+08:00",
@@ -1012,7 +1012,7 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({
           id: "sent-message-1",
           timestamp: "2026-05-09T12:00:01+08:00",
@@ -1046,7 +1046,7 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({
           id: "sent-message-1",
           timestamp: "2026-05-09T12:00:01+08:00",
@@ -1075,7 +1075,7 @@ describe("QQAdapter outbound rich messages", () => {
       adapter.postMessage("qq:c2c/user-openid", {
         markdown: "![sample](data:image/png;base64,aW1hZ2U=)",
       }),
-      /QQ markdown images require external HTTP\(S\) URLs/,
+      /QQ markdown images require HTTP\(S\) URLs or qqbot-media image references/,
     );
   });
 
@@ -1091,14 +1091,14 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/files") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/files") {
         return Response.json({
           file_info: "media-file-info",
           file_uuid: "media-file-uuid",
           ttl: 3600,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({
           id: "sent-message-1",
           timestamp: "2026-05-09T12:00:01+08:00",
@@ -1146,12 +1146,12 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/files") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/files") {
         return Response.json({
           file_info: "media-file-info",
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({
           id: "sent-message-1",
           timestamp: "2026-05-09T12:00:01+08:00",
@@ -1173,6 +1173,7 @@ describe("QQAdapter outbound rich messages", () => {
 
     assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
       file_data: Buffer.from("image-bytes").toString("base64"),
+      file_name: "attachment",
       file_type: 1,
       srv_send_msg: false,
     });
@@ -1187,10 +1188,10 @@ describe("QQAdapter outbound rich messages", () => {
       if (url === "https://tokens.example.test/app/getAppAccessToken") {
         return Response.json({ access_token: "access-token", expires_in: 7200 });
       }
-      if (url === "https://api.sgroup.qq.com/v2/groups/group-openid/files") {
+      if (url === "https://api.bot.qq.com/v2/groups/group-openid/files") {
         return Response.json({ file_info: "group-file-info" });
       }
-      if (url === "https://api.sgroup.qq.com/v2/groups/group-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/groups/group-openid/messages") {
         return Response.json({ id: "group-file-message" });
       }
       return Response.json({ code: 404 }, { status: 404 });
@@ -1210,6 +1211,7 @@ describe("QQAdapter outbound rich messages", () => {
 
     assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
       file_data: Buffer.from("report").toString("base64"),
+      file_name: "report.pdf",
       file_type: 4,
       srv_send_msg: false,
     });
@@ -1234,7 +1236,7 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/files") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/files") {
         uploadCount += 1;
         return Response.json({
           file_info: "media-file-info",
@@ -1242,7 +1244,7 @@ describe("QQAdapter outbound rich messages", () => {
           ttl: 3600,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         messageCount += 1;
         return Response.json({
           id: `sent-message-${messageCount}`,
@@ -1292,7 +1294,7 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/files") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/files") {
         uploadCount += 1;
         return Response.json({
           file_info: `media-file-info-${uploadCount}`,
@@ -1300,7 +1302,7 @@ describe("QQAdapter outbound rich messages", () => {
           ttl: 3600,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         messageCount += 1;
         return Response.json({
           id: `sent-message-${messageCount}`,
@@ -1358,7 +1360,7 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({
           id: "sent-message-1",
           timestamp: "2026-05-09T12:00:01+08:00",
@@ -1404,7 +1406,7 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({
           id: "sent-message-1",
           timestamp: "2026-05-09T12:00:01+08:00",
@@ -1493,7 +1495,7 @@ describe("QQAdapter outbound rich messages", () => {
     );
   });
 
-  it("renders Chat SDK 4.34 table captions and charts as QQ markdown fallbacks", async () => {
+  it("renders Chat SDK table captions and charts as QQ markdown fallbacks", async () => {
     const adapter = createAdapter({
       tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
     });
@@ -1502,7 +1504,7 @@ describe("QQAdapter outbound rich messages", () => {
       if (url === "https://tokens.example.test/app/getAppAccessToken") {
         return Response.json({ access_token: "access-token", expires_in: 7200 });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({ id: "sent-message-1" });
       }
       return Response.json({ code: 404 }, { status: 404 });
@@ -1549,7 +1551,7 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({
           id: "sent-message-1",
           timestamp: "2026-05-09T12:00:01+08:00",
@@ -1618,13 +1620,13 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/files") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/files") {
         return Response.json({
           file_info: "media-file-info",
           ttl: 3600,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({
           id: "sent-message-1",
           timestamp: "2026-05-09T12:00:01+08:00",
@@ -1650,6 +1652,7 @@ describe("QQAdapter outbound rich messages", () => {
 
     assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
       file_data: Buffer.from("image-bytes").toString("base64"),
+      file_name: "sample image",
       file_type: 1,
       srv_send_msg: false,
     });
@@ -1675,7 +1678,7 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/stream_messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/stream_messages") {
         return Response.json({
           id: "stream-msg-1",
           timestamp: "2026-05-09T12:00:01+08:00",
@@ -1710,7 +1713,6 @@ describe("QQAdapter outbound rich messages", () => {
 
     await adapter.stream("qq:c2c/user-openid", chunks());
 
-    // Token + intermediate + final stream_messages calls.
     assert.ok(fetchMock.mock.callCount() >= 3);
 
     const streamCalls = fetchMock.mock.calls.filter((call) =>
@@ -1718,18 +1720,16 @@ describe("QQAdapter outbound rich messages", () => {
     );
     assert.ok(streamCalls.length >= 2);
 
-    // First intermediate call.
     const firstBody = JSON.parse(String(streamCalls[0]?.arguments[1]?.body ?? ""));
     assert.strictEqual(firstBody.input_mode, "replace");
     assert.strictEqual(firstBody.input_state, 1);
     assert.strictEqual(firstBody.content_type, "markdown");
     assert.strictEqual(firstBody.index, 0);
     assert.strictEqual(firstBody.stream_msg_id, undefined);
-    assert.strictEqual(firstBody.event_id, "event-stream");
+    assert.strictEqual(firstBody.event_id, undefined);
     assert.strictEqual(firstBody.msg_id, "message-stream");
     assert.strictEqual(firstBody.msg_seq, 2);
 
-    // Final call.
     const lastBody = JSON.parse(String(streamCalls[streamCalls.length - 1]?.arguments[1]?.body ?? ""));
     assert.strictEqual(lastBody.input_mode, "replace");
     assert.strictEqual(lastBody.input_state, 10);
@@ -1738,6 +1738,127 @@ describe("QQAdapter outbound rich messages", () => {
     assert.strictEqual(lastBody.stream_msg_id, "stream-msg-1");
     assert.strictEqual(lastBody.msg_seq, 2);
   });
+
+  it("preserves sent Markdown prefixes throughout a long native stream", async () => {
+    const adapter = createAdapter({ tokenEndpoint: "https://tokens.example.test/token" });
+    const frames: Array<Record<string, unknown>> = [];
+    const fallbackMessages: unknown[] = [];
+    let sentContent = "";
+    globalThis.fetch = mock.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://tokens.example.test/token") {
+        return Response.json({ access_token: "access-token", expires_in: 7200 });
+      }
+      const body = JSON.parse(String(init?.body));
+      if (url.endsWith("/stream_messages")) {
+        frames.push(body);
+        if (!body.content_raw.startsWith(sentContent)) {
+          return Response.json({ code: 40007, message: "sent prefix cannot change" }, { status: 400 });
+        }
+        sentContent = body.content_raw;
+        return Response.json({ id: "native-stream" });
+      }
+      if (body.msg_type !== 6) fallbackMessages.push(body);
+      return Response.json({ id: "regular-message" });
+    }) as typeof globalThis.fetch;
+    await initializeWithProcessSpy(adapter);
+    await adapter.handleSocketModePayload({
+      op: 0,
+      t: "C2C_MESSAGE_CREATE",
+      d: { id: "incoming", author: { user_openid: "user-openid" }, content: "start" },
+    });
+
+    // Splits occur inside bold text, a link and a code fence. The final
+    // unclosed marker must also remain unchanged when the DONE frame is sent.
+    const parts = [
+      `${"长文本段落。".repeat(500)}\n\n**尚未完成的`,
+      "加粗**，参考[文档](https://example.test/",
+      "docs)\n\n```ts\nconst value = ",
+      "1;\n```\n\n末尾保留**未闭合",
+    ];
+    async function* chunks() {
+      for (const part of parts) {
+        yield part;
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      }
+    }
+
+    const result = await adapter.stream("qq:c2c/user-openid", chunks());
+
+    assert.strictEqual(result.id, "native-stream");
+    assert.deepStrictEqual(fallbackMessages, []);
+    assert.strictEqual(frames.length, parts.length + 1);
+    for (const [index, frame] of frames.entries()) {
+      assert.strictEqual(frame.index, index);
+      assert.strictEqual(frame.msg_seq, 2);
+      assert.strictEqual(frame.stream_msg_id, index === 0 ? undefined : "native-stream");
+      assert.strictEqual(frame.content_raw, parts.slice(0, Math.min(index + 1, parts.length)).join(""));
+    }
+    assert.strictEqual(frames.at(-1)?.input_state, 10);
+    assert.strictEqual(result.raw.content, parts.join(""));
+  });
+
+  for (const failFinal of [false, true]) {
+    it(`retains the original reply context during ${failFinal ? "native stream fallback" : "native streaming"}`, async () => {
+      const adapter = createAdapter({ tokenEndpoint: "https://tokens.example.test/token" });
+      const frames: Array<Record<string, unknown>> = [];
+      const regularMessages: Array<Record<string, unknown>> = [];
+      const incoming = (id: string) => adapter.handleSocketModePayload({
+        op: 0,
+        t: "C2C_MESSAGE_CREATE",
+        id: `event-${id}`,
+        d: { id, author: { user_openid: "user-openid" }, content: id },
+      });
+      globalThis.fetch = mock.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "https://tokens.example.test/token") {
+          return Response.json({ access_token: "access-token", expires_in: 7200 });
+        }
+        const body = JSON.parse(String(init?.body));
+        if (url.endsWith("/stream_messages")) {
+          frames.push(body);
+          if (failFinal && body.input_state === 10) {
+            return Response.json({ code: 40007 }, { status: 400 });
+          }
+          return Response.json({ id: "native-stream" });
+        }
+        if (body.msg_type === 6) {
+          // A new message can arrive even before the typing request finishes.
+          await incoming("during-typing");
+        } else {
+          regularMessages.push(body);
+        }
+        return Response.json({ id: "regular-message" });
+      }) as typeof globalThis.fetch;
+      await initializeWithProcessSpy(adapter);
+      await incoming("original");
+
+      async function* chunks() {
+        yield "hello ";
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        await incoming("during-stream");
+        yield "world";
+      }
+      const result = await adapter.stream("qq:c2c/user-openid", chunks());
+
+      assert.strictEqual(result.id, failFinal ? "regular-message" : "native-stream");
+      assert.strictEqual(frames.length, 2);
+      for (const frame of frames) {
+        assert.strictEqual(frame.msg_id, "original");
+        assert.strictEqual(frame.msg_seq, 2);
+        assert.strictEqual(frame.event_id, undefined);
+      }
+      if (failFinal) {
+        assert.deepStrictEqual(regularMessages, [{
+          content: "hello world", msg_id: "original", msg_seq: 3, msg_type: 0,
+        }]);
+      }
+      await adapter.postMessage("qq:c2c/user-openid", "reply to latest");
+      assertMatchObject(regularMessages.at(-1), {
+        msg_id: "during-stream", msg_seq: 1, content: "reply to latest",
+      });
+    });
+  }
 
   it("falls back to regular message when stream_messages API fails in C2C", async () => {
     const adapter = createAdapter({
@@ -1751,13 +1872,12 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({
           id: "sent-message-1",
           timestamp: "2026-05-09T12:00:01+08:00",
         });
       }
-      // stream_messages returns 404 to simulate API failure.
       return Response.json({ code: 404 }, { status: 404 });
     });
     globalThis.fetch = fetchMock as typeof globalThis.fetch;
@@ -1786,7 +1906,6 @@ describe("QQAdapter outbound rich messages", () => {
 
     await adapter.stream("qq:c2c/user-openid", chunks());
 
-    // Token + startTyping + failed stream_messages + fallback message.
     assert.strictEqual(fetchMock.mock.callCount(), 4);
     assert.deepStrictEqual(JSON.parse(String(fetchMock.mock.calls[1]?.arguments[1]?.body ?? "")), {
       input_notify: {
@@ -1817,7 +1936,7 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/groups/group-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/groups/group-openid/messages") {
         return Response.json({
           id: "sent-message-1",
           timestamp: "2026-05-09T12:00:01+08:00",
@@ -1853,7 +1972,7 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({ id: "typing-ack", timestamp: "2026-05-09T12:00:01+08:00" });
       }
       return Response.json({ code: 404 }, { status: 404 });
@@ -1884,7 +2003,7 @@ describe("QQAdapter outbound rich messages", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({ id: "typing-ack", timestamp: "2026-05-09T12:00:01+08:00" });
       }
       return Response.json({ code: 404 }, { status: 404 });
@@ -1893,7 +2012,6 @@ describe("QQAdapter outbound rich messages", () => {
 
     await initializeWithProcessSpy(adapter);
 
-    // Simulate a previous message establishing passive context.
     await adapter.handleWebhook(
       new Request("https://example.test/webhooks/qq", {
         body: JSON.stringify({
@@ -1944,7 +2062,6 @@ describe("QQAdapter outbound rich messages", () => {
 
     await adapter.startTyping("qq:group/group-openid");
 
-    // Group typing is a no-op; no API call is made.
     assert.strictEqual(fetchMock.mock.callCount(), 0);
   });
 });
@@ -1987,7 +2104,7 @@ describe("QQAdapter outbound passive context", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({
           id: "sent-message-1",
           timestamp: "2026-05-09T12:00:01+08:00",
@@ -2032,7 +2149,7 @@ describe("QQAdapter latest QQ and Chat SDK protocol behavior", () => {
       if (url === "https://tokens.example.test/app/getAppAccessToken") {
         return Response.json({ access_token: "access-token", expires_in: 7200 });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({
           audit_id: "audit-1",
           code: 304023,
@@ -2097,7 +2214,7 @@ describe("QQAdapter latest QQ and Chat SDK protocol behavior", () => {
       if (url === "https://tokens.example.test/app/getAppAccessToken") {
         return Response.json({ access_token: "access-token", expires_in: 7200 });
       }
-      if (url === "https://api.sgroup.qq.com/v2/users/user-openid/messages") {
+      if (url === "https://api.bot.qq.com/v2/users/user-openid/messages") {
         return Response.json({ id: "sent-wakeup" });
       }
       return Response.json({ code: 404 }, { status: 404 });
@@ -2206,7 +2323,7 @@ describe("QQAdapter socket mode", () => {
           expires_in: 7200,
         });
       }
-      if (url === "https://api.sgroup.qq.com/gateway/bot") {
+      if (url === "https://api.bot.qq.com/gateway/bot") {
         return Response.json({
           session_start_limit: {
             max_concurrency: 1,
@@ -2273,7 +2390,7 @@ describe("QQAdapter socket mode", () => {
       if (url === "https://tokens.example.test/app/getAppAccessToken") {
         return Response.json({ access_token: "access-token", expires_in: 7200 });
       }
-      if (url === "https://api.sgroup.qq.com/gateway/bot") {
+      if (url === "https://api.bot.qq.com/gateway/bot") {
         return Response.json({
           session_start_limit: { max_concurrency: 2, remaining: 10, reset_after: 60_000, total: 10 },
           shards: 2,
@@ -2377,53 +2494,55 @@ describe("QQAdapter socket mode", () => {
     await adapter.stopSocketMode();
   });
 
-  it("re-identifies after invalid-session close codes and stops on terminal close codes", async () => {
-    const sockets: MockSocketModeSocket[] = [];
-    const adapter = createAdapter({
-      mode: "socket",
-      socketMode: {
-        autoSharding: false,
-        reconnectDelayMs: 0,
-        url: "wss://gateway.example.test/websocket",
-        webSocketFactory: () => {
-          const socket = new MockSocketModeSocket();
-          sockets.push(socket);
-          return socket;
+  for (const [retryCode, terminalCode] of [[4006, 4915], [4900, 4001], [4913, 4002]]) {
+    it(`re-identifies after close code ${retryCode} and stops after ${terminalCode}`, async () => {
+      const sockets: MockSocketModeSocket[] = [];
+      const adapter = createAdapter({
+        mode: "socket",
+        socketMode: {
+          autoSharding: false,
+          reconnectDelayMs: 0,
+          url: "wss://gateway.example.test/websocket",
+          webSocketFactory: () => {
+            const socket = new MockSocketModeSocket();
+            sockets.push(socket);
+            return socket;
+          },
         },
-      },
-      tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+        tokenEndpoint: "https://tokens.example.test/app/getAppAccessToken",
+      });
+      globalThis.fetch = mock.fn(async () => Response.json({
+        access_token: "access-token",
+        expires_in: 7200,
+      })) as typeof globalThis.fetch;
+
+      const start = adapter.startSocketMode();
+      await nextTick();
+      sockets[0]!.emit("open", new Event("open"));
+      await start;
+      sockets[0]!.emit("message", {
+        data: JSON.stringify({ d: { heartbeat_interval: 60_000 }, op: 10 }),
+      } as MessageEvent);
+      await nextTick();
+      sockets[0]!.emit("message", {
+        data: JSON.stringify({ d: { session_id: "session-1" }, op: 0, s: 7, t: "READY" }),
+      } as MessageEvent);
+      await nextTick();
+
+      sockets[0]!.emitClose(retryCode, "new identify required");
+      await nextTick();
+      assert.strictEqual(sockets.length, 2);
+      sockets[1]!.emit("open", new Event("open"));
+      sockets[1]!.emit("message", {
+        data: JSON.stringify({ d: { heartbeat_interval: 60_000 }, op: 10 }),
+      } as MessageEvent);
+      await nextTick();
+      assert.strictEqual(JSON.parse(sockets[1]!.sent[0]!).op, 2);
+
+      sockets[1]!.emitClose(terminalCode, "terminal error");
+      await nextTick();
+      assert.strictEqual(sockets.length, 2);
+      await adapter.stopSocketMode();
     });
-    globalThis.fetch = mock.fn(async () => Response.json({
-      access_token: "access-token",
-      expires_in: 7200,
-    })) as typeof globalThis.fetch;
-
-    const start = adapter.startSocketMode();
-    await nextTick();
-    sockets[0]!.emit("open", new Event("open"));
-    await start;
-    sockets[0]!.emit("message", {
-      data: JSON.stringify({ d: { heartbeat_interval: 60_000 }, op: 10 }),
-    } as MessageEvent);
-    await nextTick();
-    sockets[0]!.emit("message", {
-      data: JSON.stringify({ d: { session_id: "session-1" }, op: 0, s: 7, t: "READY" }),
-    } as MessageEvent);
-    await nextTick();
-
-    sockets[0]!.emitClose(4006, "invalid session");
-    await nextTick();
-    assert.strictEqual(sockets.length, 2);
-    sockets[1]!.emit("open", new Event("open"));
-    sockets[1]!.emit("message", {
-      data: JSON.stringify({ d: { heartbeat_interval: 60_000 }, op: 10 }),
-    } as MessageEvent);
-    await nextTick();
-    assert.strictEqual(JSON.parse(sockets[1]!.sent[0]!).op, 2);
-
-    sockets[1]!.emitClose(4915, "bot unavailable");
-    await nextTick();
-    assert.strictEqual(sockets.length, 2);
-    await adapter.stopSocketMode();
-  });
+  }
 });

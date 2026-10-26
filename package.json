@@ -1,6 +1,6 @@
 {
   "name": "@amatsuka/chat-adapter-qq",
-  "version": "0.1.13",
+  "version": "0.2.0",
   "description": "QQ adapter for chat",
   "type": "module",
   "types": "./dist/index.d.mts",
@@ -24,10 +24,10 @@
     "typecheck": "tsc && tsc -p test/tsconfig.json"
   },
   "peerDependencies": {
-    "chat": "^4.34.0"
+    "chat": "^4.43.0"
   },
   "devDependencies": {
-    "@chat-adapter/state-memory": "^4.34.0",
+    "@chat-adapter/state-memory": "^4.43.0",
     "@types/node": "^25.6.2",
     "tsdown": "^0.22.0",
     "typescript": "^6.0.3"

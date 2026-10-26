@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /** Derive a deterministic 32-byte seed from bot secret for webhook challenge signing. */
 export function createBotSeed(secret: string): Uint8Array {
   const source = stringToBytes(secret);
@@ -69,6 +71,14 @@ export function bytesToBase64(bytes: Uint8Array): string {
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytesToArrayBuffer(bytes));
   return bytesToHex(new Uint8Array(digest));
+}
+
+export function md5Hex(bytes: Uint8Array): string {
+  return createHash("md5").update(bytes).digest("hex");
+}
+
+export function sha1Hex(bytes: Uint8Array): string {
+  return createHash("sha1").update(bytes).digest("hex");
 }
 
 /** Concatenate two Uint8Arrays. */

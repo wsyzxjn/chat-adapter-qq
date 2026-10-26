@@ -9,12 +9,12 @@ importers:
   .:
     dependencies:
       chat:
-        specifier: ^4.34.0
-        version: 4.34.0
+        specifier: ^4.43.0
+        version: 4.43.0
     devDependencies:
       '@chat-adapter/state-memory':
-        specifier: ^4.34.0
-        version: 4.34.0
+        specifier: ^4.43.0
+        version: 4.43.0
       '@types/node':
         specifier: ^25.6.2
         version: 25.6.2
@@ -53,8 +53,12 @@ packages:
     resolution: {integrity: sha512-JeSVu/m8x/zpp4CLjYHVNXuhEyOkhPXuxM8YOXjh6L4LlvQNKuUNOTo5KdBuKAcTDHw8DquToTaEkhsBqPXOaA==}
     engines: {node: ^22.18.0 || >=24.11.0}
 
-  '@chat-adapter/state-memory@4.34.0':
-    resolution: {integrity: sha512-voZQK+bAz6RLwUDb582f+Wub5aChp6eVqtHAGjf1gAYFUKcIy54k0JA540jG1ZHLym6m0kIH5FjVXDCDb5DLng==}
+  '@chat-adapter/catalog@4.43.0':
+    resolution: {integrity: sha512-JRH40HwYIXdIiwSc/gNw65q5T/gaf691n4//2YOhjRE4YO9KzSFJ/N+RrTD3M8iGz2jI4Jg92wb6OAqfYsAkTQ==}
+    engines: {node: '>=20'}
+
+  '@chat-adapter/state-memory@4.43.0':
+    resolution: {integrity: sha512-VG9ZbKAIMPh0tcLN/BM/sJ/DQNiwQJhtwvq0IlHEI32mDfjnrZbXKNI6j8kRB1hbU2Xw6eesLue2N6uNsVm5xg==}
     engines: {node: '>=20'}
 
   '@emnapi/core@1.10.0':
@@ -240,14 +244,17 @@ packages:
   character-entities@2.0.2:
     resolution: {integrity: sha512-shx7oQ0Awen/BRIdkjkvz54PnEEI/EjwXDSIZp86/KKdbafHh1Df/RYGBhn4hbe2+uKC9FnT5UCEdyPz3ai9hQ==}
 
-  chat@4.34.0:
-    resolution: {integrity: sha512-g3c9ANavtCX7BwHcB5c3lWKIUm+8Oo7qlbgQ7/ni1rmVLLeCQa7FiMfeIyEyTAd/4HlRQu5jcS4EPdb0VyhUDQ==}
+  chat@4.43.0:
+    resolution: {integrity: sha512-9ICxMewK1+4J0pEbR7eMBTh3JCL3NkyDHAgGrU/gblyyw/+QUcwFHCXIoQMt0Xlyup1c5smS0/gYytTt8NVc6w==}
     engines: {node: '>=20'}
     peerDependencies:
       ai: ^6.0.182 || ^7.0.0
+      workflow: ^5.0.0-beta.35
       zod: ^3.0.0 || ^4.0.0
     peerDependenciesMeta:
       ai:
+        optional: true
+      workflow:
         optional: true
       zod:
         optional: true
@@ -624,12 +631,15 @@ snapshots:
       '@babel/helper-string-parser': 8.0.0-rc.5
       '@babel/helper-validator-identifier': 8.0.0-rc.5
 
-  '@chat-adapter/state-memory@4.34.0':
+  '@chat-adapter/catalog@4.43.0': {}
+
+  '@chat-adapter/state-memory@4.43.0':
     dependencies:
-      chat: 4.34.0
+      chat: 4.43.0
     transitivePeerDependencies:
       - ai
       - supports-color
+      - workflow
       - zod
 
   '@emnapi/core@1.10.0':
@@ -771,8 +781,9 @@ snapshots:
 
   character-entities@2.0.2: {}
 
-  chat@4.34.0:
+  chat@4.43.0:
     dependencies:
+      '@chat-adapter/catalog': 4.43.0
       '@workflow/serde': 4.1.0-beta.2
       mdast-util-to-string: 4.0.0
       remark-gfm: 4.0.1

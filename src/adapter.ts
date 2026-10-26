@@ -37,26 +37,72 @@ import {
 } from "./constants";
 import { QQFormatConverter } from "./format-converter.js";
 import { QQGatewayClient } from "./gateway.js";
+import { getQQBusinessCode } from "./utils/errors.js";
 import type {
   QQAccessTokenResponse,
   QQAdapterConfig,
   QQActionEventDataMap,
   QQArkPayload,
+  QQBinaryData,
+  QQCommandPanel,
+  QQCommandPanelCreateInput,
+  QQCommandPanelCreateResponse,
+  QQCommandPanelDetail,
+  QQCommandPanelList,
+  QQCommandPanelListOptions,
+  QQCommandPanelTargetUpdateInput,
+  QQCommandPanelUpdateResponse,
+  QQGeneratedUrlLinkResponse,
   QQGatewayBotResponse,
+  QQGroupBlacklistList,
+  QQGroupBlacklistListOptions,
+  QQGroupBlacklistUpdateInput,
+  QQGroupBlacklistUpdateResponse,
+  QQGroupBotState,
+  QQGroupInfo,
+  QQGroupJoinRequestList,
+  QQGroupJoinRequestListOptions,
+  QQGroupJoinRequestReviewInput,
+  QQGroupMember,
+  QQGroupMemberList,
+  QQGroupMemberListOptions,
+  QQGroupMemberMuteUpdateInput,
+  QQGroupMuteState,
   QQIncomingMessage,
   QQInputNotifyPayload,
   QQInteractionPayload,
+  QQJoinApprovalStrategyCreateInput,
+  QQJoinApprovalStrategyCreateResponse,
+  QQJoinApprovalStrategyList,
+  QQJoinApprovalStrategyListOptions,
+  QQJoinApprovalStrategyUpdateInput,
+  QQJoinApprovalStrategyUpdateResponse,
+  QQJoinApprovalStrategyWhitelistInput,
+  QQJoinApprovalStrategyWhitelistResponse,
+  QQMediaImage,
+  QQMediaImageList,
+  QQMediaImageListOptions,
+  QQMediaImageUploadInput,
   QQMessageEventType,
   QQMessageEventDataMap,
+  QQMenu,
+  QQMenuResponse,
+  QQMenuUpdateResponse,
+  QQMultipartUploadPartFinishRequest,
+  QQMultipartUploadPrepareRequest,
+  QQMultipartUploadPrepareResponse,
   QQMediaPayload,
   QQMediaUploadRequest,
   QQMediaUploadResponse,
+  QQPanelScope,
   QQPlatformEvent,
   QQPlatformEventDataMap,
   QQPlatformEventHandler,
   QQPlatformEventType,
   QQQuotedMessage,
   QQRawMessage,
+  QQRemoveGroupMembersInput,
+  QQRemoveGroupMembersResponse,
   QQSendMessageRequest,
   QQSendMessageOptions,
   QQSentMessage,
@@ -91,13 +137,16 @@ import {
 import {
   assertNever,
   bytesToBase64,
+  bytesToArrayBuffer,
   bytesToHex,
   concatBytes,
   createBotSeed,
   hexToBytes,
   isValidationPayload,
+  md5Hex,
   parseCursor,
   parseQQTimestamp,
+  sha1Hex,
   sha256Hex,
   stringToBytes,
   toChatError,
@@ -156,9 +205,13 @@ const ED25519_PRIVATE_KEY_DER_PREFIX = new Uint8Array([
   0x04, 0x22, 0x04, 0x20,
 ]);
 const QQ_SIGNATURE_SIZE = 64;
+const QQ_DIRECT_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+const QQ_MEDIA_FILE_MAX_BYTES = 200 * 1024 * 1024;
+const QQ_MEDIA_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+const QQ_MULTIPART_HASH_PREFIX_BYTES = 10_002_432;
 
 /**
- * Chat SDK adapter for QQ Bot OpenAPI v2 (webhook mode).
+ * Chat SDK adapter for QQ Bot OpenAPI v2.
  *
  * Supported scenes:
  * - C2C
@@ -534,6 +587,269 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     }));
   }
 
+  async generateQQUrlLink(callbackData?: string): Promise<QQGeneratedUrlLinkResponse> {
+    return this.apiRequest("/v2/generate_url_link", {
+      body: JSON.stringify(callbackData === undefined ? {} : { callback_data: callbackData }),
+      method: "POST",
+    });
+  }
+
+  async uploadQQMediaImage(input: QQMediaImageUploadInput): Promise<QQMediaImage> {
+    const data = await this.readBinaryData(input.data);
+    this.validateMediaImage(input.fileName, input.mimeType, data.byteLength);
+
+    const prepared = await this.apiRequest<{
+      expires_in: number;
+      presigned_url: string;
+      upload_id: string;
+    }>("/v2/media-images/prepare", {
+      body: JSON.stringify({
+        content_type: input.mimeType,
+        file_name: input.fileName,
+        file_size: data.byteLength,
+        md5: md5Hex(data),
+        sha1: sha1Hex(data),
+      }),
+      method: "POST",
+    });
+    const etag = await this.putPresignedBinary(prepared.presigned_url, data, input.mimeType, prepared.expires_in);
+    return this.apiRequest<QQMediaImage>("/v2/media-images/complete", {
+      body: JSON.stringify({
+        md5: normalizeEtag(etag) ?? md5Hex(data),
+        upload_id: prepared.upload_id,
+      }),
+      method: "POST",
+    });
+  }
+
+  async listQQMediaImages(options: QQMediaImageListOptions = {}): Promise<QQMediaImageList> {
+    return this.apiRequest(withQuery("/v2/media-images", { cursor: options.cursor }), {
+      method: "GET",
+    });
+  }
+
+  async deleteQQMediaImage(imageId: string): Promise<void> {
+    await this.apiRequest(`/v2/media-images/${encodeURIComponent(imageId)}/delete`, {
+      method: "DELETE",
+    });
+  }
+
+  async getQQMenu(): Promise<QQMenuResponse> {
+    return this.apiRequest("/v2/menu", { method: "GET" });
+  }
+
+  async updateQQMenu(menu: QQMenu | null): Promise<QQMenuUpdateResponse> {
+    return this.apiRequest("/v2/menu", {
+      body: JSON.stringify({ menu }),
+      method: "PUT",
+    });
+  }
+
+  async listQQCommandPanels(
+    scope: QQPanelScope,
+    options: QQCommandPanelListOptions = {},
+  ): Promise<QQCommandPanelList> {
+    return this.apiRequest(withQuery("/v2/panels", {
+      cursor: options.cursor,
+      limit: options.limit,
+      scope,
+    }), { method: "GET" });
+  }
+
+  async createQQCommandPanel(input: QQCommandPanelCreateInput): Promise<QQCommandPanelCreateResponse> {
+    return this.apiRequest("/v2/panels", {
+      body: JSON.stringify(input),
+      method: "POST",
+    });
+  }
+
+  async getQQCommandPanel(panelId: string): Promise<QQCommandPanelDetail> {
+    return this.apiRequest(`/v2/panels/${encodeURIComponent(panelId)}`, {
+      method: "GET",
+    });
+  }
+
+  async updateQQCommandPanel(
+    panelId: string,
+    panel: QQCommandPanel,
+  ): Promise<QQCommandPanelUpdateResponse> {
+    return this.apiRequest(`/v2/panels/${encodeURIComponent(panelId)}`, {
+      body: JSON.stringify({ panel }),
+      method: "PUT",
+    });
+  }
+
+  async deleteQQCommandPanel(panelId: string): Promise<void> {
+    await this.apiRequest(`/v2/panels/${encodeURIComponent(panelId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async updateQQCommandPanelTargets(
+    panelId: string,
+    input: QQCommandPanelTargetUpdateInput,
+  ): Promise<void> {
+    await this.apiRequest(`/v2/panels/${encodeURIComponent(panelId)}/target`, {
+      body: JSON.stringify(input),
+      method: "PUT",
+    });
+  }
+
+  async getQQGroupInfo(groupOpenId: string): Promise<QQGroupInfo> {
+    return this.apiRequest(this.groupPath(groupOpenId, "/info"), { method: "GET" });
+  }
+
+  async getQQGroupBotState(groupOpenId: string): Promise<QQGroupBotState> {
+    return this.apiRequest(this.groupPath(groupOpenId, "/bot_state"), { method: "GET" });
+  }
+
+  async listQQGroupMembers(
+    groupOpenId: string,
+    options: QQGroupMemberListOptions = {},
+  ): Promise<QQGroupMemberList> {
+    return this.apiRequest(withQuery(this.groupPath(groupOpenId, "/members"), {
+      cursor: options.cursor,
+    }), { method: "GET" });
+  }
+
+  async getQQGroupMember(groupOpenId: string, memberOpenId: string): Promise<QQGroupMember> {
+    return this.apiRequest(
+      `${this.groupPath(groupOpenId, "/members")}/${encodeURIComponent(memberOpenId)}`,
+      { method: "GET" },
+    );
+  }
+
+  async removeQQGroupMembers(
+    groupOpenId: string,
+    input: QQRemoveGroupMembersInput,
+  ): Promise<QQRemoveGroupMembersResponse> {
+    return this.apiRequest(this.groupPath(groupOpenId, "/batch_remove_members"), {
+      body: JSON.stringify(input),
+      method: "POST",
+    });
+  }
+
+  async listQQGroupMemberBlacklist(
+    groupOpenId: string,
+    options: QQGroupBlacklistListOptions = {},
+  ): Promise<QQGroupBlacklistList> {
+    return this.apiRequest(withQuery(this.groupPath(groupOpenId, "/member_blacklist"), {
+      cursor: options.cursor,
+      limit: options.limit,
+    }), { method: "GET" });
+  }
+
+  async updateQQGroupMemberBlacklist(
+    groupOpenId: string,
+    input: QQGroupBlacklistUpdateInput,
+  ): Promise<QQGroupBlacklistUpdateResponse> {
+    return this.apiRequest(this.groupPath(groupOpenId, "/member_blacklist"), {
+      body: JSON.stringify(input),
+      method: "POST",
+    });
+  }
+
+  async getQQGroupMuteState(groupOpenId: string): Promise<QQGroupMuteState> {
+    return this.apiRequest(this.groupPath(groupOpenId, "/restrict_chat_setting"), {
+      method: "GET",
+    });
+  }
+
+  async updateQQGroupMemberMute(
+    groupOpenId: string,
+    input: QQGroupMemberMuteUpdateInput,
+  ): Promise<void> {
+    await this.apiRequest(this.groupPath(groupOpenId, "/restrict_chat_setting"), {
+      body: JSON.stringify(input),
+      method: "POST",
+    });
+  }
+
+  async listQQGroupJoinRequests(
+    groupOpenId: string,
+    options: QQGroupJoinRequestListOptions = {},
+  ): Promise<QQGroupJoinRequestList> {
+    return this.apiRequest(withQuery(this.groupPath(groupOpenId, "/join_request_list"), {
+      cursor: options.cursor,
+      limit: options.limit,
+    }), { method: "GET" });
+  }
+
+  async reviewQQGroupJoinRequest(
+    groupOpenId: string,
+    memberOpenId: string,
+    input: QQGroupJoinRequestReviewInput,
+  ): Promise<void> {
+    await this.apiRequest(
+      this.groupPath(
+        groupOpenId,
+        `/approval_join_request/${encodeURIComponent(memberOpenId)}`,
+      ),
+      {
+        body: JSON.stringify(input),
+        method: "POST",
+      },
+    );
+  }
+
+  async listQQGroupJoinApprovalStrategies(
+    options: QQJoinApprovalStrategyListOptions = {},
+  ): Promise<QQJoinApprovalStrategyList> {
+    return this.apiRequest(withQuery("/v2/groups/join_approval_strategy", {
+      cursor: options.cursor,
+      limit: options.limit,
+    }), { method: "GET" });
+  }
+
+  async createQQGroupJoinApprovalStrategy(
+    input: QQJoinApprovalStrategyCreateInput,
+  ): Promise<QQJoinApprovalStrategyCreateResponse> {
+    return this.apiRequest("/v2/groups/join_approval_strategy", {
+      body: JSON.stringify(input),
+      method: "POST",
+    });
+  }
+
+  async updateQQGroupJoinApprovalStrategy(
+    strategyId: string,
+    input: QQJoinApprovalStrategyUpdateInput,
+  ): Promise<QQJoinApprovalStrategyUpdateResponse> {
+    return this.apiRequest(
+      `/v2/groups/join_approval_strategy/${encodeURIComponent(strategyId)}`,
+      {
+        body: JSON.stringify(input),
+        method: "PATCH",
+      },
+    );
+  }
+
+  async deleteQQGroupJoinApprovalStrategy(strategyId: string): Promise<void> {
+    await this.apiRequest(
+      `/v2/groups/join_approval_strategy/${encodeURIComponent(strategyId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async executeQQGroupJoinApprovalStrategy(strategyId: string): Promise<void> {
+    await this.apiRequest(
+      `/v2/groups/join_approval_strategy/${encodeURIComponent(strategyId)}/execute`,
+      { method: "POST" },
+    );
+  }
+
+  async updateQQGroupJoinApprovalStrategyWhitelist(
+    strategyId: string,
+    input: QQJoinApprovalStrategyWhitelistInput,
+  ): Promise<QQJoinApprovalStrategyWhitelistResponse> {
+    return this.apiRequest(
+      `/v2/groups/join_approval_strategy/${encodeURIComponent(strategyId)}/whitelist_users`,
+      {
+        body: JSON.stringify(input),
+        method: "POST",
+      },
+    );
+  }
+
   private async postPayload(
     threadId: string,
     thread: QQThreadId,
@@ -550,6 +866,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     });
     const sentRaw = result.body;
     const asynchronouslyAccepted = result.status === 201 || result.status === 202;
+    const businessCode = getQQBusinessCode(sentRaw);
     const content = sentRaw.content ?? payload.content ?? payload.markdown?.content;
     const generatedId = asynchronouslyAccepted
       ? `qq:pending/${sentRaw.audit_id ?? crypto.randomUUID()}`
@@ -557,8 +874,8 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
 
     const enrichedRaw: QQRawMessage = {
       ...sentRaw,
-      ...(asynchronouslyAccepted && sentRaw.code !== undefined
-        ? { _chat_async_code: sentRaw.code }
+      ...(asynchronouslyAccepted && businessCode !== undefined
+        ? { _chat_async_code: businessCode }
         : {}),
       ...(asynchronouslyAccepted && sentRaw.message
         ? { _chat_async_message: sentRaw.message }
@@ -639,7 +956,6 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
           : {}),
     };
 
-    // Advance msg_seq if used.
     if (context?.msgId) {
       context.nextMsgSeq += 1;
     }
@@ -663,13 +979,11 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     const thread = this.decodeThreadId(threadId);
     this.logger.debug("QQ stream called", { threadId, threadType: thread.type });
 
-    // Group scene: fallback to regular postMessage after collecting all content.
     if (thread.type !== "c2c") {
       this.logger.debug("QQ stream: group scene, using fallback");
       return this.streamAsFallback(threadId, textStream);
     }
 
-    // C2C scene: use QQ native stream_messages API.
     return this.streamC2C(threadId, thread, textStream);
   }
 
@@ -695,22 +1009,21 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   ): Promise<RawMessage<QQRawMessage>> {
     this.logger.debug("QQ streamC2C started", { threadId, userOpenId: thread.userOpenId });
 
-    const initialContext = this.passiveContextByThread.get(threadId);
-    if (!initialContext?.msgId) {
+    const context = this.passiveContextByThread.get(threadId);
+    if (!context?.msgId) {
       this.logger.info("QQ native stream requires passive msg_id context; using fallback", { threadId });
       return this.streamAsFallback(threadId, textStream);
     }
 
-    // Notify QQ client that bot is typing.
+    // Keep this stream anchored to its original inbound message, even if a
+    // newer message arrives while the typing request or stream is in flight.
+    const msgId = context.msgId;
     await this.startTyping(threadId);
 
-    const context = this.passiveContextByThread.get(threadId)!;
     const streamMsgSeq = context.nextMsgSeq;
     context.nextMsgSeq += 1;
 
-    const { StreamingMarkdownRenderer } = await import("chat");
-    const renderer = new StreamingMarkdownRenderer();
-
+    let accumulatedContent = "";
     let streamMsgId: string | undefined;
     let index = 0;
     let stopped = false;
@@ -730,9 +1043,8 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
         input_state: isFinal ? 10 : 1,
         content_type: "markdown",
         content_raw: content,
-        event_id: context.eventId ?? "",
         index,
-        msg_id: context.msgId!,
+        msg_id: msgId,
         msg_seq: streamMsgSeq,
         ...(streamMsgId ? { stream_msg_id: streamMsgId } : {}),
       };
@@ -761,7 +1073,9 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
         return;
       }
 
-      const content = renderer.render();
+      // QQ replace frames must preserve the already-sent prefix (error 40007).
+      // Markdown repair can insert closing markers that later chunks overwrite.
+      const content = accumulatedContent;
       this.logger.debug("QQ stream doSendAndSchedule", { contentLength: content.length, contentPreview: content.slice(0, 100), lastSentContentLength: lastSentContent.length });
 
       if (content !== lastSentContent && content.trim()) {
@@ -799,7 +1113,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
         chunkCount++;
         const text = streamChunkToText(chunk);
         this.logger.debug("QQ stream received chunk", { chunkCount, textLength: text.length, textPreview: text.slice(0, 50) });
-        renderer.push(text);
+        accumulatedContent += text;
       }
     } finally {
       this.logger.debug("QQ stream textStream ended", { chunkCount, stopped });
@@ -818,21 +1132,26 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       this.logger.debug("QQ stream pendingSend completed", { streamMsgId });
     }
 
-    const finalContent = renderer.finish();
+    const finalContent = accumulatedContent;
     this.logger.debug("QQ stream finalContent", { length: finalContent.length, preview: finalContent.slice(0, 100) });
 
-    // Stream never established: fallback to regular message.
+    const postFallback = () => this.postPayload(threadId, thread, {
+      content: finalContent || " ",
+      msg_id: msgId,
+      msg_seq: context.nextMsgSeq++,
+      msg_type: 0,
+    });
+
     if (!streamMsgId) {
       this.logger.info("QQ stream never established, falling back to regular message", { chunkCount });
-      return this.postMessage(threadId, finalContent || " ");
+      return postFallback();
     }
 
-    // Send final message.
     this.logger.debug("QQ stream sending final message", { streamMsgId, finalIndex: index });
     const finalResponse = await sendChunk(finalContent, true);
     if (!finalResponse?.id) {
       this.logger.warn("QQ stream final message failed, falling back to regular message");
-      return this.postMessage(threadId, finalContent || " ");
+      return postFallback();
     }
     this.logger.debug("QQ stream final message sent", { finalResponseId: finalResponse.id });
 
@@ -1185,6 +1504,10 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     }
 
     const raw = payload.d as QQActionEventDataMap[typeof payload.t];
+    const interactionType = raw.type ?? raw.data?.type;
+    if (interactionType !== undefined && interactionType !== 11 && interactionType !== 12) {
+      return null;
+    }
     const thread = this.resolveThreadFromInteraction(raw);
     if (!thread) {
       this.logger.warn("QQ interaction event is missing thread identifiers", {
@@ -1241,11 +1564,13 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       const thread = this.resolveThreadFromEvent(payload.t, raw);
       if (thread) {
         threadId = this.encodeThreadId(thread);
-        this.updatePassiveContext(threadId, {
-          _chat_thread_id: toThreadStorageId(thread),
-          _chat_thread_type: thread.type,
-          event_id: this.resolvePayloadEventId(payload),
-        });
+        if (["FRIEND_ADD", "C2C_MSG_RECEIVE", "GROUP_ADD_ROBOT", "GROUP_MSG_RECEIVE"].includes(payload.t)) {
+          this.updatePassiveContext(threadId, {
+            _chat_thread_id: toThreadStorageId(thread),
+            _chat_thread_type: thread.type,
+            event_id: this.resolvePayloadEventId(payload),
+          });
+        }
       }
     }
 
@@ -1486,6 +1811,12 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   ): Promise<QQSendMessageRequest[]> {
     const payload = buildMessageContentPayload(this.converter, message);
     const attachments = getPostableAttachments(message);
+    if (options.forceVerifyImageResource !== undefined) {
+      if (!payload.markdown || attachments.length > 0) {
+        throw new ChatError("QQ image verification requires a standalone Markdown message.", "INVALID_REQUEST");
+      }
+      payload.markdown.force_verify_image_resource = options.forceVerifyImageResource;
+    }
     if (attachments.length === 0) {
       return [this.applySendOptions(threadId, thread, payload, options)];
     }
@@ -1538,34 +1869,232 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   }
 
   private async uploadMedia(thread: QQThreadId, attachment: Attachment): Promise<QQMediaPayload> {
-    const fileType = toQQMediaFileType(thread, attachment);
-    const request: QQMediaUploadRequest = {
-      file_type: fileType,
-      srv_send_msg: false,
-    };
+    const requestedFileType = toQQMediaFileType(thread, attachment);
+    let data: Uint8Array | null = null;
+    let fileName: string | null = null;
     let cacheSource: string;
     if (attachment.url) {
-      request.url = attachment.url;
       cacheSource = `url:${attachment.url}`;
     } else {
-      const data = await this.readAttachmentData(attachment);
-      request.file_data = bytesToBase64(data);
-      cacheSource = `data:${await sha256Hex(data)}`;
+      data = await this.readAttachmentData(attachment);
+      fileName = attachment.name ?? "attachment";
+      cacheSource = `data:${fileName}:${await sha256Hex(data)}`;
     }
+    const fileType = data
+      ? downgradeQQMediaFileTypeForSize(requestedFileType, data.byteLength)
+      : requestedFileType;
 
-    const cacheKey = `${thread.type}:${fileType}:${cacheSource}`;
+    const cacheKey = `${thread.type}:${toThreadStorageId(thread)}:${fileType}:${cacheSource}`;
     const cached = this.getCachedMedia(cacheKey);
     if (cached) {
       return cached;
     }
 
-    const uploaded = await this.apiRequest<QQMediaUploadResponse>(getUploadMediaPath(thread), {
-      body: JSON.stringify(request),
-      method: "POST",
-    });
+    const uploaded = attachment.url
+      ? await this.apiRequest<QQMediaUploadResponse>(getUploadMediaPath(thread), {
+          body: JSON.stringify({
+            file_type: fileType,
+            srv_send_msg: false,
+            url: attachment.url,
+          } satisfies QQMediaUploadRequest),
+          method: "POST",
+        })
+      : data && data.byteLength > QQ_DIRECT_UPLOAD_MAX_BYTES
+        ? await this.uploadMediaMultipart(thread, data, fileName!, fileType)
+        : await this.apiRequest<QQMediaUploadResponse>(getUploadMediaPath(thread), {
+            body: JSON.stringify({
+              file_data: bytesToBase64(data!),
+              file_name: fileName!,
+              file_type: fileType,
+              srv_send_msg: false,
+            } satisfies QQMediaUploadRequest),
+            method: "POST",
+          });
     const media = this.toMediaPayload(uploaded);
     this.setCachedMedia(cacheKey, media);
     return media;
+  }
+
+  private async uploadMediaMultipart(
+    thread: QQThreadId,
+    data: Uint8Array,
+    fileName: string,
+    fileType: number,
+  ): Promise<QQMediaUploadResponse> {
+    const prepareRequest: QQMultipartUploadPrepareRequest = {
+      file_name: fileName,
+      file_size: String(data.byteLength),
+      file_type: fileType,
+      md5: md5Hex(data),
+      md5_10m: md5Hex(data.subarray(0, QQ_MULTIPART_HASH_PREFIX_BYTES)),
+      sha1: sha1Hex(data),
+    };
+    const prepared = await this.apiRequest<QQMultipartUploadPrepareResponse>(
+      getMultipartPath(thread, "upload_prepare"),
+      {
+        body: JSON.stringify(prepareRequest),
+        method: "POST",
+      },
+    );
+    const parts = [...prepared.parts]
+      .sort((left, right) => left.index - right.index)
+      .map((part) => {
+        const size = Number(part.block_size);
+        if (!Number.isInteger(size) || size <= 0) {
+          throw new ChatError("QQ multipart upload returned an invalid part size.", "INVALID_REQUEST");
+        }
+        return { ...part, size };
+      });
+    const chunks: Array<{ data: Uint8Array; part: (typeof parts)[number] }> = [];
+    let offset = 0;
+    for (const part of parts) {
+      const end = offset + part.size;
+      if (end > data.byteLength) {
+        throw new ChatError("QQ multipart upload part sizes exceed the file size.", "INVALID_REQUEST");
+      }
+      chunks.push({ data: data.subarray(offset, end), part });
+      offset = end;
+    }
+    if (chunks.length === 0 || offset !== data.byteLength) {
+      throw new ChatError("QQ multipart upload part sizes do not cover the file.", "INVALID_REQUEST");
+    }
+
+    const uploadConfig = prepared.upload_config ?? {};
+    const retryDelayMs = Math.max(0, (uploadConfig.retry_delay ?? 1) * 1000);
+    const retryTimeoutMs = Math.max(0, (uploadConfig.retry_timeout ?? 300) * 1000);
+    await this.runWithConcurrency(
+      chunks,
+      Math.max(1, Math.trunc(uploadConfig.concurrency ?? 1)),
+      async ({ data: chunk, part }) => {
+        const deadline = Date.now() + retryTimeoutMs;
+        let attempt = 0;
+        while (true) {
+          try {
+            await this.putPresignedBinary(part.presigned_url, chunk, "application/octet-stream");
+            const finishRequest: QQMultipartUploadPartFinishRequest = {
+              block_size: String(chunk.byteLength),
+              md5: md5Hex(chunk),
+              part_index: part.index,
+              upload_id: prepared.upload_id,
+            };
+            await this.apiRequest(getMultipartPath(thread, "upload_part_finish"), {
+              body: JSON.stringify(finishRequest),
+              method: "POST",
+            });
+            return;
+          } catch (error) {
+            if (!isRetryableUploadError(error) || Date.now() + retryDelayMs > deadline) {
+              throw error;
+            }
+            attempt += 1;
+            this.logger.warn("QQ multipart upload part failed; retrying", {
+              attempt,
+              partIndex: part.index,
+            });
+            await new Promise((resolve) => {
+              setTimeout(resolve, retryDelayMs);
+            });
+          }
+        }
+      },
+    );
+
+    return this.apiRequest(getUploadMediaPath(thread), {
+      body: JSON.stringify({
+        file_name: fileName,
+        file_type: fileType,
+        srv_send_msg: false,
+        upload_id: prepared.upload_id,
+      } satisfies QQMediaUploadRequest),
+      method: "POST",
+    });
+  }
+
+  private async runWithConcurrency<T>(
+    items: readonly T[],
+    concurrency: number,
+    worker: (item: T) => Promise<void>,
+  ): Promise<void> {
+    let nextIndex = 0;
+    const run = async (): Promise<void> => {
+      while (nextIndex < items.length) {
+        const item = items[nextIndex++]!;
+        await worker(item);
+      }
+    };
+    const results = await Promise.allSettled(
+      Array.from({ length: Math.min(concurrency, items.length) }, run),
+    );
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") {
+      throw failure.reason;
+    }
+  }
+
+  private async putPresignedBinary(
+    url: string,
+    data: Uint8Array,
+    contentType: string,
+    expiresInSeconds?: number,
+  ): Promise<string | null> {
+    const configuredTimeoutMs = this.config.requestTimeoutMs ?? 10_000;
+    const uploadTimeoutMs = Math.max(configuredTimeoutMs, 60_000);
+    const expiryTimeoutMs = expiresInSeconds
+      ? Math.max(1_000, expiresInSeconds * 1000)
+      : uploadTimeoutMs;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      Math.min(uploadTimeoutMs, expiryTimeoutMs),
+    );
+    try {
+      const response = await fetch(url, {
+        body: bytesToArrayBuffer(data),
+        headers: {
+          "Content-Type": contentType,
+        },
+        method: "PUT",
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const responseBody = await response.text();
+        throw toChatError({
+          endpoint: "QQ presigned upload endpoint",
+          message: `QQ upload failed (${response.status})`,
+          retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+          responseBody,
+          status: response.status,
+        });
+      }
+      return response.headers.get("ETag");
+    } catch (error) {
+      if (error instanceof ChatError || error instanceof RateLimitError) {
+        throw error;
+      }
+      throw new ChatError("QQ presigned upload failed.", "NETWORK_ERROR", error);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  private validateMediaImage(
+    fileName: string,
+    mimeType: QQMediaImageUploadInput["mimeType"],
+    byteLength: number,
+  ): void {
+    if (byteLength <= 0 || byteLength > QQ_MEDIA_IMAGE_MAX_BYTES) {
+      throw new ChatError("QQ media images must be between 1 byte and 10 MiB.", "INVALID_REQUEST");
+    }
+    const extension = fileName.split(".").pop()?.toLowerCase();
+    const allowedExtensions: Record<QQMediaImageUploadInput["mimeType"], readonly string[]> = {
+      "image/gif": ["gif"],
+      "image/jpeg": ["jpeg", "jpg"],
+      "image/png": ["png"],
+      "image/webp": ["webp"],
+    };
+    if (!extension || !allowedExtensions[mimeType].includes(extension)) {
+      throw new ChatError("QQ media image extension must match its MIME type.", "INVALID_REQUEST");
+    }
   }
 
   private toMediaPayload(media: QQMediaUploadResponse): QQMediaPayload {
@@ -1603,13 +2132,35 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     if (!data) {
       throw new NotImplementedError("QQ media messages require URL-based or binary attachment data.", "attachments");
     }
+    return this.readBinaryData(data);
+  }
+
+  private async readBinaryData(data: QQBinaryData): Promise<Uint8Array> {
     if (data instanceof Blob) {
       return new Uint8Array(await data.arrayBuffer());
+    }
+    if (data instanceof ArrayBuffer) {
+      return new Uint8Array(data);
     }
     if (ArrayBuffer.isView(data)) {
       return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
     }
-    throw new NotImplementedError("QQ media messages require Blob or binary attachment data.", "attachments");
+    throw new NotImplementedError(
+      "QQ media operations require Blob or binary attachment data.",
+      "attachments",
+    );
+  }
+
+  private groupPath(groupOpenIdOrThreadId: string, suffix: string): string {
+    let groupOpenId = groupOpenIdOrThreadId;
+    if (groupOpenIdOrThreadId.startsWith(`${this.name}:`)) {
+      const thread = this.decodeThreadId(groupOpenIdOrThreadId);
+      if (thread.type !== "group") {
+        throw new ChatError("QQ group management requires a group thread ID.", "INVALID_REQUEST");
+      }
+      groupOpenId = thread.groupOpenId;
+    }
+    return `/v2/groups/${encodeURIComponent(groupOpenId)}${suffix}`;
   }
 
   private updatePassiveContext(threadId: string, raw: QQRawMessage): void {
@@ -1621,17 +2172,15 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     }
 
     const context = this.passiveContextByThread.get(threadId);
-    if (context) {
-      if (msgId && msgId !== context.msgId) {
-        context.msgId = msgId;
-        context.nextMsgSeq = 1;
-      }
+    if (context && msgId && msgId === context.msgId) {
       if (eventId && eventId !== context.eventId) {
         context.eventId = eventId;
       }
       return;
     }
 
+    // Replace the context for a new inbound message so ongoing replies retain
+    // their original message ID and sequence counter.
     this.passiveContextByThread.set(threadId, {
       ...(eventId ? { eventId } : {}),
       ...(msgId ? { msgId, nextMsgSeq: 1 } : { nextMsgSeq: 1 }),
@@ -1683,6 +2232,16 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       }
 
       const data = JSON.parse(bodyText) as QQAccessTokenResponse;
+      const businessCode = getQQBusinessCode(data);
+      if (businessCode !== undefined && businessCode !== 0) {
+        throw toChatError({
+          endpoint,
+          message: `QQ token request failed (${response.status})`,
+          retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+          responseBody: bodyText,
+          status: response.status,
+        });
+      }
       if (!data.access_token) {
         throw new ChatError(`QQ token response missing access_token at ${endpoint}`, "AUTH_FAILED");
       }
@@ -1778,20 +2337,62 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
   }
 }
 
-function getQQBusinessCode(body: unknown): number | undefined {
-  if (!body || typeof body !== "object") {
-    return undefined;
+function getMultipartPath(
+  thread: QQThreadId,
+  action: "upload_part_finish" | "upload_prepare",
+): string {
+  switch (thread.type) {
+    case "c2c":
+      return `/v2/users/${encodeURIComponent(thread.userOpenId)}/${action}`;
+    case "group":
+      return `/v2/groups/${encodeURIComponent(thread.groupOpenId)}/${action}`;
+    case "guild_channel":
+      throw new NotImplementedError(
+        "QQ multipart uploads are not implemented for guild channels.",
+        action,
+      );
+    default:
+      return assertNever(thread);
   }
-  const record = body as Record<string, unknown>;
-  const value = record.code ?? record.errcode;
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.trunc(value);
+}
+
+function isRetryableUploadError(error: unknown): boolean {
+  return error instanceof RateLimitError
+    || (error instanceof ChatError && error.code === "NETWORK_ERROR");
+}
+
+function downgradeQQMediaFileTypeForSize(fileType: number, byteLength: number): number {
+  if (byteLength > QQ_MEDIA_FILE_MAX_BYTES) {
+    throw new ChatError("QQ media files cannot exceed 200 MiB.", "INVALID_REQUEST");
   }
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? Math.trunc(parsed) : undefined;
+  const softLimits: Record<number, number> = {
+    1: 20 * 1024 * 1024,
+    2: 30 * 1024 * 1024,
+    3: 20 * 1024 * 1024,
+  };
+  const softLimit = softLimits[fileType];
+  return softLimit !== undefined && byteLength > softLimit ? 4 : fileType;
+}
+
+function withQuery(
+  path: string,
+  values: Record<string, number | string | undefined>,
+): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined && value !== "") {
+      query.set(key, String(value));
+    }
   }
-  return undefined;
+  const suffix = query.toString();
+  return suffix ? `${path}?${suffix}` : path;
+}
+
+function normalizeEtag(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  return value.replace(/^W\//, "").replace(/^"|"$/g, "").toLowerCase();
 }
 
 function parseRetryAfterMs(value: string | null): number | undefined {

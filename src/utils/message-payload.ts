@@ -402,6 +402,8 @@ function renderCardChildMarkdown(child: CardChild): string | null {
       return chartElementToFallbackText(child);
     case "text":
       return renderTextElement(child.content, child.style);
+    case "text_input":
+      throw new NotImplementedError("QQ cards do not support text inputs.", "text_input");
     default:
       return assertNever(child);
   }
@@ -447,7 +449,7 @@ function normalizeQQMarkdownContent(content: string): string {
 
     const image = node as typeof node & { alt?: string | null; url?: string };
     if (typeof image.url !== "string" || !canRenderMarkdownImage(image.url)) {
-      throw new NotImplementedError("QQ markdown images require external HTTP(S) URLs.", "markdown");
+      throw new NotImplementedError("QQ markdown images require HTTP(S) URLs or qqbot-media image references.", "markdown");
     }
     if (!hasQQMarkdownImageSize(image.alt ?? "")) {
       image.alt = toQQMarkdownImageAlt(image.alt ?? undefined);
@@ -462,7 +464,8 @@ function normalizeQQMarkdownContent(content: string): string {
 function canRenderMarkdownImage(url: string): boolean {
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "https:" || parsed.protocol === "http:";
+    return parsed.protocol === "https:" || parsed.protocol === "http:"
+      || (parsed.protocol === "qqbot-media:" && parsed.hostname === "image" && parsed.pathname.startsWith("/v1/"));
   } catch {
     return false;
   }

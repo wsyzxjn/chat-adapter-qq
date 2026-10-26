@@ -8,6 +8,8 @@ export {
   concatBytes,
   createBotSeed,
   hexToBytes,
+  md5Hex,
+  sha1Hex,
   sha256Hex,
   stringToBytes,
 } from "./crypto.js";

@@ -451,7 +451,7 @@ async function postFileTest(thread: QQTestTarget): Promise<void> {
 async function postChartTest(thread: QQTestTarget): Promise<void> {
   await thread.post(Card({
     children: [
-      CardText("Chat SDK 4.34 Table caption + Chart fallback test"),
+      CardText("Chat SDK Table caption + Chart fallback test"),
       Table({
         caption: "QQ adapter capability status",
         headers: ["Capability", "Status"],

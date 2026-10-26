@@ -28,11 +28,11 @@ export const GATEWAY_HELLO_OPCODE = 10;
 export const GATEWAY_HEARTBEAT_ACK_OPCODE = 11;
 
 /** QQ OpenAPI base URL (production). */
-export const DEFAULT_API_BASE_URL = "https://api.sgroup.qq.com";
+export const DEFAULT_API_BASE_URL = "https://api.bot.qq.com";
 /** QQ OpenAPI base URL (sandbox). */
 export const SANDBOX_API_BASE_URL = "https://sandbox.api.sgroup.qq.com";
 /** QQ app access token endpoint. */
-export const DEFAULT_TOKEN_ENDPOINT = "https://bots.qq.com/app/getAppAccessToken";
+export const DEFAULT_TOKEN_ENDPOINT = "https://api.bot.qq.com/app/getAppAccessToken";
 /** Default message pagination limit for in-memory cache reads. */
 export const DEFAULT_FETCH_LIMIT = 50;
 /** Per-thread in-memory message cache cap. */
@@ -44,6 +44,7 @@ export const QQ_INTENTS = {
   DIRECT_MESSAGE: 1 << 12,
   FORUMS_EVENT: 1 << 28,
   GROUP_AND_C2C_EVENT: 1 << 25,
+  GROUP_MEMBER_EVENT: 1 << 24,
   GUILDS: 1 << 0,
   GUILD_MEMBERS: 1 << 1,
   GUILD_MESSAGES: 1 << 9,
@@ -87,8 +88,13 @@ export const PLATFORM_EVENT_TYPES = [
   "GROUP_DEL_ROBOT",
   "GROUP_MSG_REJECT",
   "GROUP_MSG_RECEIVE",
+  "GROUP_JOIN_REQUEST",
+  "GROUP_MEMBER_ADD",
+  "GROUP_MEMBER_REMOVE",
+  "INTERACTION_CREATE",
   "MESSAGE_AUDIT_PASS",
   "MESSAGE_AUDIT_REJECT",
+  "SUBSCRIBE_MESSAGE_STATUS",
 ] as const satisfies readonly QQPlatformEventType[];
 const PLATFORM_EVENT_TYPE_SET: ReadonlySet<string> = new Set(PLATFORM_EVENT_TYPES);
 

@@ -9,6 +9,9 @@ QQ 机器人开放平台 API v2 的 [Chat SDK](https://www.npmjs.com/package/cha
 - 接收 QQ 私聊（C2C）和群聊消息
 - 支持 Webhook 和 Socket Mode
 - 发送文本、QQ Markdown、Markdown Keyboard、媒体附件和 Chat SDK `files`
+- 支持素材图片、小文件直传和自动大文件分片上传
+- 支持全局自定义菜单、指令面板和分享链接
+- 支持群信息、成员、黑名单、禁言、入群审批与自动审批策略
 - 将按钮回调映射到 `chat.onAction`
 - 支持 `chat.onDirectMessage`、`chat.openDM`、消息撤回和 Chat SDK 状态持久化历史
 - 保留 QQ 原始 payload，方便读取平台特有字段
@@ -19,7 +22,9 @@ QQ 机器人开放平台 API v2 的 [Chat SDK](https://www.npmjs.com/package/cha
 pnpm add @amatsuka/chat-adapter-qq chat @chat-adapter/state-memory
 ```
 
-要求 Node.js 20 或更高版本；当前适配器基于 Chat SDK 4.34。
+要求 Node.js 20 或更高版本；当前适配器基于 Chat SDK 4.43。
+
+已按 2026-10-26 可访问的 QQ 官方 API v2 文档核对，当前 C2C/群聊范围内的官方接口均已封装。完整接口、权限限制和范围外能力见 [协议与能力对照](docs/protocol-alignment.md)。生产 API 与 Access Token 默认使用统一域名 `api.bot.qq.com`。
 
 ## 快速开始
 
@@ -127,12 +132,20 @@ qq.onEvent(["GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT"], async (event) => {
   console.log(event.type, event.data);
 });
 
+qq.onEvent("SUBSCRIBE_MESSAGE_STATUS", async (event) => {
+  console.log("订阅授权变化", event.data.result);
+});
+
 const unsubscribe = qq.onEvent(async (event) => {
   console.log("QQ platform event", event.type);
 });
 ```
 
 主动/public 消息被 QQ 以 HTTP 201/202 异步接受时，返回消息的 `raw._chat_delivery_status` 为 `accepted`，并保留 `_chat_http_status`、`_chat_async_code` 和 `_chat_async_message`。后续结果可通过 `MESSAGE_AUDIT_PASS` / `MESSAGE_AUDIT_REJECT` 监听；Socket Mode 需要订阅 `QQ_INTENTS.MESSAGE_AUDIT`。
+
+群成员加入、退出和入群申请可通过 `GROUP_MEMBER_ADD`、`GROUP_MEMBER_REMOVE`、`GROUP_JOIN_REQUEST` 监听；Socket Mode 需显式加入 `QQ_INTENTS.GROUP_MEMBER_EVENT`，入群申请事件还要求机器人具备群管理员身份。默认 intents 不包含群成员事件。
+
+按钮（type=11）和快捷菜单（type=12）回调会先 ACK，再进入 `chat.onAction`。消息反馈、清空会话、授权等其他互动通过 `qq.onEvent("INTERACTION_CREATE", handler)` 原样交付，不当作按钮派发，也不自动 ACK。
 
 ## QQ 专有发送
 
@@ -167,9 +180,40 @@ await thread.post({
 });
 ```
 
-媒体附件支持 URL 或二进制 `data` / `fetchData`，支持 `image`、`video`、`audio` 和 C2C/群聊 `file`。QQ OpenAPI 每条消息只接受一个 `media` 对象，因此多个附件/文件会按输入顺序拆成多条消息。上传/登记媒体后会把返回的 `file_info`、`file_uuid` 和 `ttl` 透传到 `media`，并在当前进程内按 TTL 复用；`ttl=0` 视为长期有效，未返回 TTL 时不缓存。
+媒体附件支持 URL 或二进制 `data` / `fetchData`，支持 `image`、`video`、`audio` 和 C2C/群聊 `file`。二进制上传会携带 `file_name`（优先使用附件名称，无名称时为 `attachment`）；不超过 5 MiB 时直接上传，超过后自动使用官方 `upload_prepare`、分片 PUT、`upload_part_finish` 和 files 合并流程。超过图片/视频/语音软限制的内容按官方规则降级为文件，硬限制为 200 MiB。QQ OpenAPI 每条消息只接受一个 `media` 对象，因此多个附件/文件会按输入顺序拆成多条消息。上传/登记媒体后会把返回的 `file_info`、`file_uuid` 和 `ttl` 透传到 `media`，并在当前进程内按 TTL 复用；`ttl=0` 视为长期有效，未返回 TTL 时不缓存。
 
-JSX/Card 里的 `Image({ url })` 和 `imageUrl` 会自动转成 QQ media，支持普通 URL 和 `data:image/...;base64,...`；`Text` / `CardText`、`CardLink`、`Fields`、`Table`（含 `caption`）、`Chart`、`Divider` 会渲染到 Markdown，`Button` / `LinkButton` 会渲染为 QQ Keyboard。
+JSX/Card 里的 `Image({ url })` 和 `imageUrl` 使用 HTTP(S) URL 时会直接渲染为 Markdown 图片，使用 `data:image/...;base64,...` 时走 QQ media 上传；`Text` / `CardText`、`CardLink`、`Fields`、`Table`（含 `caption`）、`Chart`、`Divider` 会渲染到 Markdown，`Button` / `LinkButton` 会渲染为 QQ Keyboard。Card 中的文本输入组件暂不支持，会显式报错。
+
+Markdown 与 Card 图片也支持平台素材引用 `qqbot-media://image/v1/<token>`，直接作为 Markdown 图片发送。素材可上传到平台后复用：
+
+```ts
+import { readFile } from "node:fs/promises";
+
+const image = await qq.uploadQQMediaImage({
+  data: await readFile("./chart.png"),
+  fileName: "chart.png",
+  mimeType: "image/png",
+});
+
+await qq.postQQMessage("qq:c2c/<openid>", {
+  markdown: `![图表 #800px #400px](${image.url})`,
+});
+
+const { images, total } = await qq.listQQMediaImages();
+await qq.deleteQQMediaImage(image.image_id);
+```
+
+需要在图片转存失败时中断发送，可使用：
+
+```ts
+await qq.postQQMessage("qq:c2c/<openid>", {
+  markdown: "![图表 #800px #400px](qqbot-media://image/v1/<token>)",
+}, {
+  forceVerifyImageResource: true,
+});
+```
+
+该选项仅用于独立 Markdown/Card 消息，不能与媒体附件混发。
 
 QQ 专有能力挂在适配器实例上。ARK 消息可直接调用：
 
@@ -185,7 +229,7 @@ await qq.postArk("qq:c2c/<openid>", {
 });
 ```
 
-需要使用 QQ 平台专有字段时，可调用 `postQQMessage`。`isWakeup` 会发送 C2C 主动唤醒消息，并自动禁用缓存的被动回复上下文；`messageReference` 会原样映射为 QQ `message_reference`，具体场景权限仍由 QQ 服务端判定。
+需要使用 QQ 平台专有字段时，可调用 `postQQMessage`。`isWakeup` 会发送 C2C 主动唤醒消息，并自动禁用缓存的被动回复上下文；`messageReference` 会原样映射为 QQ `message_reference`。引用索引应取自入站消息 `message_scene.ext` 的 `msg_idx`，或已发送消息 `raw.ext_info.ref_idx`，具体场景权限仍由 QQ 服务端判定。
 
 ```ts
 await qq.postQQMessage("qq:c2c/<openid>", "主动提醒", {
@@ -200,9 +244,59 @@ await qq.postQQMessage("qq:c2c/<openid>", "引用回复", {
 });
 ```
 
-C2C `stream()` 在存在入站 `msg_id` 被动上下文时使用 QQ 原生 `stream_messages`，并在整个流中固定使用同一个 `msg_seq`；主动场景或协议调用失败时会安全降级为普通消息。
+C2C `stream()` 在存在入站 `msg_id` 被动上下文时使用 QQ 原生 `stream_messages`，并在整个流中固定使用同一个 `msg_id` 和 `msg_seq`，期间收到新消息也不会切换回复对象。各帧使用原始累计文本，保留已发送的前缀，不自动补全未闭合的 Markdown 标记（QQ 会以 `40007` 拒绝修改前缀的内容）；主动场景或协议调用失败时会降级为普通消息。
 
 Embed 在 QQ 官方 C2C/GROUP 场景下不支持，当前不适配。
+
+## 菜单、面板与群管理
+
+全局自定义菜单仅作用于 C2C，设置后对所有用户生效：
+
+```ts
+const current = await qq.getQQMenu();
+await qq.updateQQMenu({
+  items: [
+    { name: "帮助", send_message: "/help", type: "send_message" },
+    { name: "官网", link: "https://example.com", type: "link" },
+  ],
+});
+```
+
+指令面板支持 `c2c`、`group`、`channel` 和 `dm` 配置，单聊和群聊还可按指定对象关联：
+
+```ts
+const panel = await qq.createQQCommandPanel({
+  scope: "group",
+  target_type: "all",
+  panel: {
+    items: [
+      { name: "/help", desc: "查看帮助", type: "command" },
+      { name: "文档", link: "https://example.com/docs", type: "link" },
+    ],
+  },
+});
+
+await qq.getQQCommandPanel(panel.panel_id);
+await qq.updateQQCommandPanel(panel.panel_id, {
+  items: [{ name: "/status", desc: "查看状态", type: "command" }],
+});
+await qq.deleteQQCommandPanel(panel.panel_id);
+```
+
+群管理方法接受群 openid，也接受 `qq:group/<openid>` 线程 ID：
+
+```ts
+const info = await qq.getQQGroupInfo("qq:group/<group_openid>");
+const members = await qq.listQQGroupMembers("<group_openid>");
+const requests = await qq.listQQGroupJoinRequests("<group_openid>");
+
+await qq.reviewQQGroupJoinRequest("<group_openid>", "<member_openid>", {
+  op: "approve",
+  join_request_id: requests.list[0]?.join_request_id,
+});
+```
+
+完整的群信息、机器人状态、成员、黑名单、禁言、入群审批和自动审批策略方法见 `QQAdapter` 类型与 [能力对照](docs/protocol-alignment.md)。这些接口仍受 QQ 白名单、内邀和群管理员权限约束；分享链接可调用 `generateQQUrlLink()`。
 
 ## 群消息、命令与提及
 
@@ -258,8 +352,11 @@ qq:guild/<guild_id>/<channel_id>
 - modal / options load
 - schedule message
 - QQ Embed 发送
+- 频道/Guild 消息、私信、表情表态及频道管理
 
 `fetchMessages` / `fetchMessage` 直接调用适配器时仍读取本进程缓存，不是 QQ 服务端历史消息查询。适配器同时声明了 `persistThreadHistory = true`，因此通过 Chat SDK 运行时接收/发送的线程历史会写入所配置的 state adapter，可跨进程恢复（持久性取决于所选 state adapter；`state-memory` 本身只在内存中保存）。
+
+C2C/群聊没有官方 `editMessage`、reaction、服务端历史或定时消息接口，因此上述 `NotImplementedError` 对应的是平台能力边界，不是待补的管理接口。
 
 ## 代码风格
 
