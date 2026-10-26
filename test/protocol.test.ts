@@ -16,7 +16,14 @@ afterEach(() => {
 });
 
 function createAdapter(): QQAdapter {
-  return new QQAdapter({ appId: "test-app", clientSecret: "test-secret", logger, verifySignature: false });
+  return new QQAdapter({
+    appId: "test-app",
+    apiHost: "bot",
+    clientSecret: "test-secret",
+    hostFallback: false,
+    logger,
+    verifySignature: false,
+  });
 }
 
 function incoming(id: string) {

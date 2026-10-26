@@ -125,6 +125,15 @@ export const testBot = new Chat({
   userName: botUserName,
 });
 
+qq.onEvent("GROUP_JOIN_REQUEST", async (event) => {
+  console.log("[qq:join-request]", {
+    autoApprovedStrategyId: event.data?.auto_approved?.strategy_id,
+    data: event.data,
+    eventId: event.eventId,
+    threadId: event.threadId,
+  });
+});
+
 qq.onEvent(async (event) => {
   if (event.type === "MESSAGE_AUDIT_PASS" || event.type === "MESSAGE_AUDIT_REJECT") {
     console.log("[qq:audit]", event.type, {
@@ -132,6 +141,9 @@ qq.onEvent(async (event) => {
       eventId: event.eventId,
       threadId: event.threadId,
     });
+    return;
+  }
+  if (event.type === "GROUP_JOIN_REQUEST") {
     return;
   }
   console.log("[qq:event]", event.type, event.data);

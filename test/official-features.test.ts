@@ -21,7 +21,9 @@ afterEach(() => {
 function createAdapter(): QQAdapter {
   return new QQAdapter({
     appId: "test-app",
+    apiHost: "bot",
     clientSecret: "test-secret",
+    hostFallback: false,
     logger,
     verifySignature: false,
   });
@@ -133,8 +135,8 @@ describe("QQ official C2C and group features", () => {
     });
   });
 
-  it("automatically uses official multipart upload for binary files over 5 MiB", async () => {
-    const bytes = Buffer.alloc(5 * 1024 * 1024 + 1, 7);
+  it("automatically uses official multipart upload above the default threshold", async () => {
+    const bytes = Buffer.alloc(8 * 1024 * 1024 + 1, 7);
     const firstSize = 3 * 1024 * 1024;
     const calls: Array<{ body?: Record<string, unknown>; method: string; url: string }> = [];
     let firstPartAttempts = 0;
@@ -198,11 +200,13 @@ describe("QQ official C2C and group features", () => {
       srv_send_msg: false,
       upload_id: "multipart-1",
     });
-    assert.deepStrictEqual(calls.find((call) => call.url.endsWith("/messages"))?.body, {
-      content: "archive",
-      media: { file_info: "merged-file", ttl: 3600 },
-      msg_type: 7,
-    });
+    assert.deepStrictEqual(
+      calls.filter((call) => call.url.endsWith("/messages")).map((call) => call.body),
+      [
+        { content: "archive", msg_type: 0 },
+        { media: { file_info: "merged-file", ttl: 3600 }, msg_type: 7 },
+      ],
+    );
     assert.strictEqual(firstPartAttempts, 2);
   });
 
@@ -235,7 +239,7 @@ describe("QQ official C2C and group features", () => {
   });
 
   it("does not retry multipart permission failures", async () => {
-    const bytes = Buffer.alloc(5 * 1024 * 1024 + 1, 9);
+    const bytes = Buffer.alloc(8 * 1024 * 1024 + 1, 9);
     let partAttempts = 0;
     globalThis.fetch = mock.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

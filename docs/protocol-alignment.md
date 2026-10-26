@@ -18,17 +18,17 @@
 
 ## 本次修正
 
-- 生产 API 与获取 Access Token 的默认地址统一为 `https://api.bot.qq.com`。显式配置 `apiBaseUrl`、`tokenEndpoint` 时仍使用调用方提供的地址。沙箱域名没有在本轮取得新的官方地址依据，未推测替换。
-- 统一解析 `err_code`、`code`、`errcode`，以当前通用契约的 `err_code` 优先。HTTP 200 中的业务错误会抛出标准错误；token 接口的业务限流、认证错误也会正确分类。HTTP 201/202 继续标记为异步接受，保留实际业务码，不能视为已经送达。
+- 当前 wiki 使用 `https://api.bot.qq.com`；适配器默认仍沿用 `api.sgroup.qq.com` / `bots.qq.com` 兼容既有机器人 IP 白名单。可配置 `apiHost: "bot"` 主动切换，或启用 `hostFallback` 在默认 token 主机不可达时自动切换接口与 token 主机。显式 `apiBaseUrl`、`tokenEndpoint` 始终优先。沙箱域名没有在本轮取得新的官方地址依据，未推测替换。
+- 统一解析 `err_code`、`code`、`errcode`，优先采用第一个非零业务码；`code: 0` 不会再遮蔽同时返回的 `errcode` / `err_code`。HTTP 200 中的业务错误会抛出标准错误；token 接口的业务限流、认证错误也会正确分类。HTTP 201/202 继续标记为异步接受，保留实际业务码，不能视为已经送达。
 - 补充当前收发、媒体与流式接口的错误分类，包括主动消息限流、用户拒收、被动回复过期、消息过长与流式 `50002` 限流。仅依据状态码和数值错误码，错误描述不参与判断。响应体的 `trace_id` 会保留在错误描述中。
 - Markdown/Card 支持 `qqbot-media://image/v1/<token>` 图片引用；`postQQMessage` 的 `forceVerifyImageResource` 对应 `markdown.force_verify_image_resource`，仅适用于独立 Markdown/Card 消息。
-- 二进制上传携带官方要求的 `file_name`，有名称时保留名称；内容相同但名称不同的文件不再共用同一个上传缓存项。超过 5 MiB 时自动执行官方分片上传、文件合并和并发/重试配置。
+- 二进制上传在有名称时携带 `file_name`；媒体缓存同时限定目标会话、文件类型和内容，不跨用户或群复用 `file_info`。默认超过 8 MiB 时执行官方分片上传、文件合并和并发/重试配置，分片失败只重试 `NETWORK_ERROR` 与限流错误。
 - 提供 Markdown 素材图片的 prepare、预签名 PUT、complete、列表和删除方法；图片与 MIME 类型在请求前校验。
 - 提供全局自定义菜单、指令面板 CRUD、面板关联对象和分享链接方法。
 - 提供群信息、机器人群内状态、成员列表/详情、批量移除、黑名单、禁言、入群申请审批、自动审批策略 CRUD/执行/白名单方法。
 - 入站类型补充 `ark_data`、`picture` 卡片、成员角色、跨应用账号、嵌套消息元素与发送响应的 `ext_info.ref_idx`。
 - 按钮与快捷菜单（互动 type=11/12）先 ACK 再交给 Chat SDK Action。其他互动（反馈、清空会话、授权等）通过平台事件监听交付，不自动 ACK，也不误当按钮。
-- 支持 `GROUP_MEMBER_ADD`、`GROUP_MEMBER_REMOVE`、`GROUP_JOIN_REQUEST` 及 `GROUP_MEMBER_EVENT` intent。默认 intents 保持原范围，需调用方显式订阅成员事件。
+- 支持 `GROUP_MEMBER_ADD`、`GROUP_MEMBER_REMOVE`、`GROUP_JOIN_REQUEST` 及 `GROUP_MEMBER_EVENT` intent。默认 intents 包含 `GROUP_AND_C2C_EVENT | INTERACTION | MESSAGE_AUDIT`；成员事件需调用方显式加入 `GROUP_MEMBER_EVENT`。
 - 支持 `SUBSCRIBE_MESSAGE_STATUS`，原样交付订阅模板授权结果及 `subscribe_id`。
 - 只有官方允许回复的平台事件才更新被动回复上下文；事件回复替换旧消息上下文，成员变动、审核结果、消息反馈等不会覆盖消息回复对象。
 - Gateway 关闭码 `4900`–`4913` 使用新 Identify，`4001/4002` 停止自动重连；已有 `4006/4007` 新 Identify、`4009` Resume 与权限类终止策略继续保留。
@@ -47,7 +47,7 @@
 | C2C 原生流式 | `stream_messages`、固定消息上下文与序号、递增帧 index、结束帧 `input_state=10`；没有建立原生流或协议失败时降级为普通消息 |
 | 群流式 | QQ 未提供该接口；先收集文本再发送普通消息 |
 | 正在输入 | C2C `msg_type=6`，群聊不发送输入状态请求 |
-| 媒体与文件 | URL、≤5 MiB 二进制直传、>5 MiB 自动分片上传与合并；软限制自动降级为文件；一次消息一个 media，多附件拆分；缓存遵守 TTL |
+| 媒体与文件 | URL、默认 ≤8 MiB 二进制直传、更大二进制自动分片上传与合并；说明文字独立发送，媒体使用干净 `msg_type=7`；软限制自动降级为文件；一次消息一个 media，多附件拆分；缓存遵守 TTL 并按目标会话隔离 |
 | 平台素材 | 图片 prepare、PUT、complete、列表和删除；HTTP(S) 和 `qqbot-media://image/v1/...` 图片直接渲染为 Markdown；data URL Card 图片走媒体上传 |
 | 引用消息 | 入站提取 `message_scene.ext` / `msg_elements`；出站支持 QQ 专用 `messageReference`，引用索引来自入站 `msg_idx` 或已发送消息的 `ext_info.ref_idx` |
 | 撤回 | C2C 与群聊 DELETE；官方时限为两分钟；群管理员可撤回普通成员消息，实际权限由服务端判断 |
@@ -64,7 +64,7 @@
 
 ## 官方 C2C / 群聊接口覆盖
 
-适配器已覆盖本次核对范围内的 33 个管理、配置和上传端点，并为这些方法导出完整请求/响应类型。实现复用现有鉴权、超时、错误映射和请求层；分片上传使用 Node 内置哈希能力，没有引入第二套 QQ 客户端。
+适配器已覆盖本次核对范围内的 33 个管理、配置和上传端点，并为这些方法导出完整请求/响应类型。实现复用现有鉴权、超时、错误映射和请求层；哈希计算复用仓库现有 Web Crypto 与纯 TypeScript MD5 实现，没有引入第二套 QQ 客户端。
 
 公开方法分为以下组：
 

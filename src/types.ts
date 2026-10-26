@@ -38,6 +38,14 @@ export type QQThreadType = QQThreadId["type"];
 /** Runtime transport mode used for receiving QQ events. */
 export type QQAdapterMode = "socket" | "webhook";
 
+/**
+ * OpenAPI host family.
+ *
+ * - `sgroup`: historical default (`api.sgroup.qq.com` + `bots.qq.com` token)
+ * - `bot`: current wiki hosts (`api.bot.qq.com` for both API and token)
+ */
+export type QQApiHost = "sgroup" | "bot";
+
 export type QQSocketModeMessageData = ArrayBuffer | string;
 
 export interface QQSocketModeWebSocket {
@@ -77,7 +85,7 @@ export interface QQSocketModeOptions {
   url?: string;
   /** Advanced/test: custom WebSocket factory. Defaults to globalThis.WebSocket. */
   webSocketFactory?: QQSocketModeWebSocketFactory;
-  /** Gateway event intents. Defaults to GROUP_AND_C2C_EVENT | INTERACTION. */
+  /** Gateway event intents. Defaults to GROUP_AND_C2C_EVENT | INTERACTION | MESSAGE_AUDIT. */
   intents?: number;
 }
 
@@ -85,14 +93,34 @@ export interface QQSocketModeOptions {
 export interface QQAdapterBaseConfig {
   /** Advanced: whether to send QQ interaction ACK API calls for button events. Defaults to true. */
   acknowledgeInteractions?: boolean;
+  /**
+   * OpenAPI host family. Defaults to `sgroup` so existing installs keep working.
+   * Set `bot` to use `https://api.bot.qq.com` for both token and OpenAPI.
+   * Explicit `apiBaseUrl` / `tokenEndpoint` always win.
+   */
+  apiHost?: QQApiHost;
   /** Advanced/test: override QQ OpenAPI base URL. */
   apiBaseUrl?: string;
   /** QQ bot app id. */
   appId: string;
   /** Advanced: Bot Secret used for webhook signing; falls back to clientSecret. */
   botSecret?: string;
+  /**
+   * Local/binary attachments larger than this (bytes) use chunked upload.
+   * Defaults to 8 MiB. URL uploads always use the simple `POST .../files` path.
+   */
+  chunkedUploadThresholdBytes?: number;
   /** QQ bot client secret for access token retrieval. */
   clientSecret: string;
+  /**
+   * When default hosts are used, retry the other host family once on token
+   * network/`NOT_FOUND` failures and stick to the working family. Defaults to true.
+   */
+  hostFallback?: boolean;
+  /** Inbound message dedupe cache cap. Defaults to 4096 keys. */
+  inboundDedupeMaxEntries?: number;
+  /** Inbound message dedupe TTL in milliseconds. Defaults to 10 minutes. Set `0` to disable. */
+  inboundDedupeTtlMs?: number;
   /** Logger implementation from Chat SDK. */
   logger?: Logger;
   /** Advanced security option: whether webhook requests must include and match `X-Bot-Appid`. */
@@ -105,6 +133,8 @@ export interface QQAdapterBaseConfig {
   strictWebhookEvents?: boolean;
   /** Advanced/test: override token endpoint for custom environments. */
   tokenEndpoint?: string;
+  /** Timeout for chunked part PUT requests. Defaults to at least 60 seconds. */
+  uploadTimeoutMs?: number;
   /** Chat SDK bot username fallback when QQ author payload is incomplete. */
   userName?: string;
   /** Enable Ed25519 webhook signature verification. */
@@ -225,22 +255,21 @@ export interface QQMessageMention extends QQMessageAuthor {
 
 export interface QQMessageElement {
   [key: string]: unknown;
-  content?: string;
+  ark_data?: QQArkData;
   attachments?: QQMessageAttachment[];
   author?: QQMessageAuthor;
-  ark_data?: QQArkData;
-  msg_elements?: QQMessageElement[];
+  content?: string;
   message_type?: number;
+  msg_elements?: QQMessageElement[];
   msg_idx?: string;
   type?: string;
 }
 
-/** Structured inbound card; distinct from the outbound ARK template payload. */
 export interface QQArkData {
-  ark_type?: "tuwen" | "feed" | "miniapp" | "map" | "contact_card" | "video_share" | "music_together" | "picture";
   ark_name?: string;
-  prompt?: string;
+  ark_type?: string;
   fields?: Record<string, unknown>;
+  prompt?: string;
 }
 
 export interface QQMessageScene {
@@ -276,6 +305,7 @@ export interface QQKeyboardRow {
 
 export interface QQKeyboardButton {
   action: {
+    anchor?: number;
     data: string;
     enter?: boolean;
     permission: {
@@ -321,11 +351,9 @@ export interface QQMediaPayload {
 
 export interface QQMediaUploadRequest {
   file_data?: string;
-  /** Required for binary and multipart uploads. */
   file_name?: string;
   file_type: number;
   srv_send_msg: boolean;
-  /** Upload task returned by upload_prepare for the multipart merge request. */
   upload_id?: string;
   url?: string;
 }
@@ -334,8 +362,47 @@ export interface QQMediaUploadResponse {
   file_info: string;
   file_uuid?: string;
   id?: string;
-  ttl?: number;
   raw_url?: string;
+  ttl?: number;
+}
+
+export interface QQUploadPrepareRequest {
+  file_name: string;
+  file_size: string;
+  file_type: number;
+  md5: string;
+  md5_10m: string;
+  sha1: string;
+}
+
+export interface QQUploadPart {
+  block_size?: number | string;
+  index?: number;
+  part_index?: number;
+  presigned_url?: string;
+  url?: string;
+}
+
+export interface QQUploadConfig {
+  concurrency?: number;
+  retry_delay?: number;
+  retry_timeout?: number;
+}
+
+export interface QQUploadPrepareResponse {
+  block_size?: number | string;
+  data?: QQUploadPrepareResponse;
+  part_list?: QQUploadPart[];
+  parts?: QQUploadPart[];
+  upload_config?: QQUploadConfig;
+  upload_id?: string;
+}
+
+export interface QQUploadPartFinishRequest {
+  block_size: string;
+  md5: string;
+  part_index: number;
+  upload_id: string;
 }
 
 /** Shared raw message shape used for inbound and outbound normalization. */
@@ -362,7 +429,7 @@ export interface QQBaseMessage {
   _chat_quoted_message?: QQQuotedMessage;
   /** File attachments. */
   attachments?: QQMessageAttachment[];
-  /** Structured card data for message_type=3. */
+  /** Inbound ARK card payload (`message_type=3`). */
   ark_data?: QQArkData;
   /** Author metadata. */
   author?: QQMessageAuthor;
@@ -382,6 +449,8 @@ export interface QQBaseMessage {
   id?: string;
   /** QQ msg_id field (also used for passive reply context). */
   msg_id?: string;
+  /** Inbound message sequence used with `msg_id` for redelivery dedupe when present. */
+  msg_seq?: number | string;
   /** QQ message elements, used by newer payloads for rich/message-reference data. */
   msg_elements?: QQMessageElement[];
   /** QQ message scene metadata, including msg_idx/ref_msg_idx values. */
@@ -429,7 +498,6 @@ export interface QQInteractionPayload {
   require_mention?: boolean;
   scene?: "c2c" | "group" | string;
   timestamp?: string;
-  /** 11=button, 12=menu; other values are platform-specific interactions. */
   type?: number;
   user_openid?: string;
   version?: number;
@@ -448,23 +516,6 @@ export interface QQThreadResolvableEventData {
   scene_param?: string;
   timestamp?: number | string;
   user_openid?: string;
-}
-
-export interface QQGroupMemberEventData extends QQThreadResolvableEventData {
-  member_openid?: string;
-}
-
-export interface QQGroupJoinRequestEventData extends QQGroupMemberEventData {
-  join_request_id?: string;
-  risk_tips?: string;
-  union_openid?: string;
-  username?: string;
-  apply_at?: string;
-  apply_source?: "self_apply" | "invited";
-  invited_by?: string;
-  bot?: boolean;
-  verify_info?: QQJoinVerifyInfo;
-  auto_approved?: { strategy_id: string };
 }
 
 /** Async message audit result dispatched by QQ for proactive/public messages. */
@@ -486,15 +537,15 @@ export type QQPlatformEventType =
   | "FRIEND_DEL"
   | "GROUP_ADD_ROBOT"
   | "GROUP_DEL_ROBOT"
-  | "GROUP_MSG_REJECT"
-  | "GROUP_MSG_RECEIVE"
   | "GROUP_JOIN_REQUEST"
   | "GROUP_MEMBER_ADD"
   | "GROUP_MEMBER_REMOVE"
+  | "GROUP_MSG_REJECT"
+  | "GROUP_MSG_RECEIVE"
   | "INTERACTION_CREATE"
-  | "SUBSCRIBE_MESSAGE_STATUS"
   | "MESSAGE_AUDIT_PASS"
-  | "MESSAGE_AUDIT_REJECT";
+  | "MESSAGE_AUDIT_REJECT"
+  | "SUBSCRIBE_MESSAGE_STATUS";
 
 export interface QQMessageEventDataMap {
   C2C_MESSAGE_CREATE: QQIncomingMessage;
@@ -513,15 +564,15 @@ export interface QQPlatformEventDataMap {
   FRIEND_DEL: QQThreadResolvableEventData;
   GROUP_ADD_ROBOT: QQThreadResolvableEventData;
   GROUP_DEL_ROBOT: QQThreadResolvableEventData;
-  GROUP_MSG_REJECT: QQThreadResolvableEventData;
-  GROUP_MSG_RECEIVE: QQThreadResolvableEventData;
   GROUP_JOIN_REQUEST: QQGroupJoinRequestEventData;
   GROUP_MEMBER_ADD: QQGroupMemberEventData;
   GROUP_MEMBER_REMOVE: QQGroupMemberEventData;
+  GROUP_MSG_REJECT: QQThreadResolvableEventData;
+  GROUP_MSG_RECEIVE: QQThreadResolvableEventData;
   INTERACTION_CREATE: QQInteractionPayload;
-  SUBSCRIBE_MESSAGE_STATUS: QQSubscribeMessageStatusEventData;
   MESSAGE_AUDIT_PASS: QQMessageAuditEventData;
   MESSAGE_AUDIT_REJECT: QQMessageAuditEventData;
+  SUBSCRIBE_MESSAGE_STATUS: QQSubscribeMessageStatusEventData;
 }
 
 export type QQKnownDispatchEventType =
@@ -559,7 +610,7 @@ export interface QQInputNotifyPayload {
   input_second: number;
 }
 
-/** QQ quoted-message reference payload. */
+/** QQ channel message reference payload. */
 export interface QQMessageReference {
   /** Ignore a missing/inaccessible referenced message instead of failing the send. */
   ignore_get_message_error?: boolean;
@@ -603,7 +654,7 @@ export interface QQSendMessageRequest {
   msg_id?: string;
   /** Passive reply sequence in the same msg_id context. */
   msg_seq?: number;
-  /** QQ msg type: 0=text, 2=Markdown, 3=ARK, 6=input notify, 7=media. */
+  /** QQ msg type: 0=text, 2=markdown, 3=ark, 6=input_notify, 7=media. */
   msg_type: number;
 }
 
@@ -660,7 +711,207 @@ export interface QQStreamMessageResponse {
   remain_msg_len?: number;
 }
 
-/** Binary input accepted by QQ upload helpers. */
+/** Join-request apply source from QQ group management APIs / `GROUP_JOIN_REQUEST`. */
+export type QQGroupJoinApplySource = "self_apply" | "invited";
+/** Join-request verification method. */
+export type QQGroupJoinVerifyMethod = "verify_message" | "admin_review_qa";
+/** Member mute mutation op. `add`/`update` require `mute_expire_at`; `del` unsets mute. */
+export type QQGroupMuteMemberOpType = "add" | "update" | "del";
+/** Join-request approval op. */
+export type QQGroupJoinRequestApprovalOp = "approve" | "decline";
+/** Join auto-approval strategy enable flag. */
+export type QQGroupJoinApprovalEnable = "on" | "off";
+/** Join auto-approval strategy group association op. */
+export type QQGroupJoinApprovalGroupOp = "add" | "del";
+/** Join auto-approval whitelist mutation op. */
+export type QQGroupJoinApprovalWhitelistOp = "add" | "del";
+/** Global group mute mode. */
+export type QQGroupMuteMode = "none" | "always" | "schedule";
+
+/** Scheduled mute window on the group global rule. */
+export interface QQGroupMuteScheduleRule {
+  enabled?: boolean;
+  end_at?: string;
+  start_at?: string;
+  task_id?: string;
+}
+
+/** Recurring mute window on the group global rule. */
+export interface QQGroupMuteRecurringRule {
+  enabled?: boolean;
+  end_time?: string;
+  start_time?: string;
+  task_id?: string;
+  weekdays?: number[];
+}
+
+/** Group-wide mute rule returned by mute-setting query. */
+export interface QQGroupMuteGlobalRule {
+  mode?: QQGroupMuteMode | string;
+  recurring_rules?: QQGroupMuteRecurringRule[];
+  schedule_rules?: QQGroupMuteScheduleRule[];
+}
+
+/** Per-member mute status from mute-setting query. */
+export interface QQGroupMutedMember {
+  member_openid: string;
+  mute_expire_at?: string;
+  union_openid?: string;
+  username?: string;
+}
+
+/**
+ * GET `/v2/groups/{group_openid}/restrict_chat_setting` response.
+ * Extra QQ fields are preserved on the object.
+ */
+export interface QQGroupMuteSetting {
+  global_rule?: QQGroupMuteGlobalRule;
+  members?: QQGroupMutedMember[];
+}
+
+/** One member mute add/update/delete in a batch (max 10; ordinary members only). */
+export interface QQGroupMuteMemberOp {
+  member_openid: string;
+  mute_expire_at?: string;
+  op: QQGroupMuteMemberOpType;
+}
+
+/** POST `/v2/groups/{group_openid}/restrict_chat_setting` body. */
+export interface QQSetGroupMemberMuteRequest {
+  members: QQGroupMuteMemberOp[];
+}
+
+/** Admin Q&A pair on a join request. */
+export interface QQGroupJoinRequestReviewQA {
+  answer?: string;
+  question?: string;
+}
+
+/** Join-request verification payload. */
+export interface QQGroupJoinRequestVerifyInfo {
+  method?: QQGroupJoinVerifyMethod | string;
+  review_qa_list?: QQGroupJoinRequestReviewQA[];
+  verify_message?: string;
+}
+
+/** Downlink-only auto-approval metadata. Official docs typo this as `AutoAppproved`. */
+export interface QQGroupJoinRequestAutoApproved {
+  strategy_id?: string;
+}
+
+/** One pending (or listed) group join request. */
+export interface QQGroupJoinRequest {
+  apply_at?: string;
+  apply_source?: QQGroupJoinApplySource | string;
+  auto_approved?: QQGroupJoinRequestAutoApproved;
+  bot?: boolean;
+  invited_by?: string;
+  join_request_id: string;
+  member_openid: string;
+  risk_tips?: string;
+  union_openid?: string;
+  username?: string;
+  verify_info?: QQGroupJoinRequestVerifyInfo;
+}
+
+/** GET `/v2/groups/{group_openid}/join_request_list` response. Empty `next_cursor` is last page. */
+export interface QQGroupJoinRequestList {
+  list?: QQGroupJoinRequest[];
+  next_cursor?: string;
+}
+
+/** Cursor/limit pagination for join-request and strategy list APIs. */
+export interface QQGroupListQuery {
+  cursor?: string;
+  limit?: number;
+}
+
+/** POST `/v2/groups/{group_openid}/approval_join_request/{member_openid}` body. */
+export interface QQApproveGroupJoinRequestOptions {
+  add_to_member_blacklist?: boolean;
+  join_request_id: string;
+  op: QQGroupJoinRequestApprovalOp;
+  reject_reason?: string;
+}
+
+/**
+ * `GROUP_JOIN_REQUEST` dispatch body.
+ * Rides `GROUP_AND_C2C_EVENT`; only delivered when the bot is a group admin.
+ * `auto_approved.strategy_id` is present on auto-approved downlink events.
+ */
+export interface QQGroupJoinRequestEventData extends QQThreadResolvableEventData, Partial<QQGroupJoinRequest> {}
+
+/** Join auto-approval strategy record. */
+export interface QQGroupJoinApprovalStrategy {
+  created_at?: string;
+  expire_at?: string;
+  group_ids?: string[];
+  group_openids?: string[];
+  is_enable?: QQGroupJoinApprovalEnable | string;
+  remark?: string;
+  strategy_id: string;
+  updated_at?: string;
+  whitelist_user_count?: number;
+}
+
+/** GET `/v2/groups/join_approval_strategy` response. */
+export interface QQGroupJoinApprovalStrategyList {
+  next_cursor?: string;
+  strategies?: QQGroupJoinApprovalStrategy[];
+}
+
+/**
+ * POST `/v2/groups/join_approval_strategy` body.
+ * `group_openids` and `group_ids` are mutually exclusive (max 100 groups).
+ */
+export interface QQCreateGroupJoinApprovalStrategyRequest {
+  expire_at?: string;
+  group_ids?: string[];
+  group_openids?: string[];
+  is_enable?: QQGroupJoinApprovalEnable;
+  remark?: string;
+}
+
+export interface QQCreateGroupJoinApprovalStrategyResponse {
+  expire_at?: string;
+  is_enable?: QQGroupJoinApprovalEnable | string;
+  strategy_id: string;
+}
+
+export interface QQGroupJoinApprovalStrategyGroupAction {
+  group_ids?: string[];
+  group_openids?: string[];
+  op: QQGroupJoinApprovalGroupOp;
+}
+
+/** PATCH `/v2/groups/join_approval_strategy/{strategy_id}` body. */
+export interface QQUpdateGroupJoinApprovalStrategyRequest {
+  expire_at?: string;
+  group_action?: QQGroupJoinApprovalStrategyGroupAction;
+  is_enable?: QQGroupJoinApprovalEnable;
+  remark?: string;
+}
+
+export interface QQUpdateGroupJoinApprovalStrategyResponse {
+  expire_at?: string;
+  is_enable?: QQGroupJoinApprovalEnable | string;
+}
+
+/**
+ * POST `/v2/groups/join_approval_strategy/{strategy_id}/whitelist_users` body.
+ * `whitelist_users` are QQ numbers as strings (avoid number precision loss).
+ */
+export interface QQUpdateGroupJoinApprovalWhitelistRequest {
+  op: QQGroupJoinApprovalWhitelistOp;
+  whitelist_users: string[];
+}
+
+export interface QQUpdateGroupJoinApprovalWhitelistResponse {
+  strategy_id?: string;
+  updated_at?: string;
+  whitelist_user_count?: number;
+}
+
 export type QQBinaryData = Blob | ArrayBuffer | ArrayBufferView;
 
 export type QQMediaImageMimeType =
@@ -671,7 +922,6 @@ export type QQMediaImageMimeType =
 
 export interface QQMediaImageUploadInput {
   data: QQBinaryData;
-  /** File name including an extension that matches `mimeType`. */
   fileName: string;
   mimeType: QQMediaImageMimeType;
 }
@@ -698,41 +948,6 @@ export interface QQMediaImageList {
   }>;
   next_cursor?: string;
   total: number;
-}
-
-export interface QQMultipartUploadPrepareRequest {
-  file_name: string;
-  file_size: string;
-  file_type: number;
-  md5: string;
-  md5_10m: string;
-  sha1: string;
-}
-
-export interface QQMultipartUploadPart {
-  block_size: string;
-  index: number;
-  presigned_url: string;
-}
-
-export interface QQMultipartUploadConfig {
-  concurrency?: number;
-  retry_delay?: number;
-  retry_timeout?: number;
-}
-
-export interface QQMultipartUploadPrepareResponse {
-  block_size: string;
-  parts: QQMultipartUploadPart[];
-  upload_config?: QQMultipartUploadConfig;
-  upload_id: string;
-}
-
-export interface QQMultipartUploadPartFinishRequest {
-  block_size: string;
-  md5: string;
-  part_index: number;
-  upload_id: string;
 }
 
 export interface QQMenuSwitch {
@@ -939,148 +1154,8 @@ export interface QQGroupBlacklistUpdateResponse {
   fail_openids?: string[];
 }
 
-export interface QQGroupMuteScheduleRule {
-  enabled: boolean;
-  end_at: string;
-  start_at: string;
-  task_id: string;
-}
-
-export interface QQGroupMuteRecurringRule {
-  enabled: boolean;
-  end_time: string;
-  start_time: string;
-  task_id: string;
-  weekdays: number[];
-}
-
-export interface QQGroupMuteState {
-  global_rule?: {
-    mode: "none" | "always" | "schedule";
-    recurring_rules?: QQGroupMuteRecurringRule[];
-    schedule_rules?: QQGroupMuteScheduleRule[];
-  };
-  members?: Array<{
-    member_openid: string;
-    mute_expire_at: string;
-    union_openid?: string;
-    username?: string;
-  }>;
-}
-
-export interface QQGroupMemberMuteInput {
-  member_openid: string;
-  mute_expire_at?: string;
-  op: "add" | "del" | "update";
-}
-
-export interface QQGroupMemberMuteUpdateInput {
-  members: QQGroupMemberMuteInput[];
-}
-
-export interface QQJoinReviewQuestion {
-  answer: string;
-  question: string;
-}
-
-export interface QQJoinVerifyInfo {
-  method?: "verify_message" | "admin_review_qa";
-  review_qa_list?: QQJoinReviewQuestion[];
-  verify_message?: string;
-}
-
-export interface QQGroupJoinRequest {
-  apply_at?: string;
-  apply_source?: "self_apply" | "invited";
-  auto_approved?: { strategy_id: string };
-  bot?: boolean;
-  invited_by?: string;
-  join_request_id: string;
-  member_openid: string;
-  risk_tips?: string;
-  union_openid?: string;
-  username?: string;
-  verify_info?: QQJoinVerifyInfo;
-}
-
-export interface QQGroupJoinRequestListOptions {
-  cursor?: string;
-  limit?: number;
-}
-
-export interface QQGroupJoinRequestList {
-  list: QQGroupJoinRequest[];
-  next_cursor?: string;
-}
-
-export interface QQGroupJoinRequestReviewInput {
-  add_to_member_blacklist?: boolean;
-  join_request_id?: string;
-  op: "approve" | "decline";
-  reject_reason?: string;
-}
-
-export interface QQJoinApprovalStrategy {
-  created_at?: string;
-  expire_at?: string;
-  group_ids?: number[];
-  group_openids?: string[];
-  is_enable?: "on" | "off";
-  remark?: string;
-  strategy_id: string;
-  updated_at?: string;
-  whitelist_user_count?: number;
-}
-
-export interface QQJoinApprovalStrategyListOptions {
-  cursor?: string;
-  limit?: number;
-}
-
-export interface QQJoinApprovalStrategyList {
-  next_cursor?: string;
-  strategies: QQJoinApprovalStrategy[];
-}
-
-export interface QQJoinApprovalStrategyCreateInput {
-  expire_at?: string;
-  group_ids?: number[];
-  group_openids?: string[];
-  is_enable?: "on" | "off";
-  remark?: string;
-}
-
-export interface QQJoinApprovalStrategyCreateResponse {
-  expire_at?: string;
-  is_enable: "on" | "off";
-  strategy_id: string;
-}
-
-export interface QQJoinApprovalStrategyUpdateInput {
-  expire_at?: string;
-  group_action?: {
-    group_ids?: number[];
-    group_openids?: string[];
-    op: "add" | "del";
-  };
-  is_enable?: "on" | "off";
-  remark?: string;
-}
-
-export interface QQJoinApprovalStrategyUpdateResponse {
-  expire_at?: string;
-  is_enable: "on" | "off";
-}
-
-export interface QQJoinApprovalStrategyWhitelistInput {
-  op: "add" | "del";
-  whitelist_users: string[];
-}
-
-export interface QQJoinApprovalStrategyWhitelistResponse {
-  strategy_id: string;
-  updated_at?: string;
-  whitelist_user_count?: number;
+export interface QQGroupMemberEventData extends QQThreadResolvableEventData {
+  member_openid?: string;
 }
 
 export interface QQGeneratedUrlLink {
