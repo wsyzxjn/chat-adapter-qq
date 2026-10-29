@@ -1,6 +1,6 @@
 {
   "name": "@amatsuka/chat-adapter-qq",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "QQ adapter for chat",
   "type": "module",
   "types": "./dist/index.d.mts",

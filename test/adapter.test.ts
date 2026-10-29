@@ -514,7 +514,7 @@ describe("QQAdapter webhook events", () => {
           msgIdx: "REFIDX_SOURCE",
         },
       },
-      text: "quoted reply",
+      text: "quoted reply\nsource message",
     });
   });
 
@@ -673,6 +673,33 @@ describe("QQAdapter webhook events", () => {
     assertMatchObject(processMessage.mock.calls[0]?.arguments[2], {
       raw: { message_type: 102 },
       text: "昨天的计划\n并行补充",
+    });
+  });
+
+  it("keeps nested forwarded content when the outer message also has text", async () => {
+    const adapter = createAdapter();
+    const processMessage = await initializeWithProcessSpy(adapter);
+
+    await dispatchC2CMessage(adapter, {
+      content: "外层回复",
+      message_type: 103,
+      msg_elements: [
+        {
+          content: "=== 消息 1 ===\n[消息内容] 第一层转发",
+          message_type: 102,
+          msg_elements: [
+            {
+              content: "--- 第1条 ---\n[消息内容] 第二层转发",
+              message_type: 102,
+              msg_elements: [{ content: "第三层转发", message_type: 0 }],
+            },
+          ],
+        },
+      ],
+    });
+
+    assertMatchObject(processMessage.mock.calls[0]?.arguments[2], {
+      text: "外层回复\n=== 消息 1 ===\n[消息内容] 第一层转发\n--- 第1条 ---\n[消息内容] 第二层转发\n第三层转发",
     });
   });
 

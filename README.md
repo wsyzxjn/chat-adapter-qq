@@ -396,7 +396,7 @@ QQ 官方字段会保留在 `message.raw` / `event.payload` 中。适配器只�
 
 Webhook 与 Socket Mode 会对 `C2C_MESSAGE_CREATE` / `GROUP_AT_MESSAGE_CREATE` / `GROUP_MESSAGE_CREATE` 做入站去重：同一 `msg_id` 加上 `msg_seq` 和/或 `message_scene.ext` 里的 `msg_idx` 视为重复投递，只 ACK、不再次进入 `processMessage` / slash。缓存有 TTL（默认 10 分钟）和容量上限。
 
-`content` 为空或只有空白时，会尽量补全 Chat 可见文本：
+`content` 为空或只有空白时，会尽量补全 Chat 可见文本；如果外层消息同时带有 `msg_elements`，则会把嵌套消息文本接在外层正文后面：
 
 - 语音附件的 `asr_refer_text`
 - `message_type=3` 的 `ark_data`（标题/prompt/来源等；完整数据仍在 `raw.ark_data`）

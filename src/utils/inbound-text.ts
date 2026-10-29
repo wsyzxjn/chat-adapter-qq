@@ -91,13 +91,18 @@ function collectElementText(elements: readonly QQMessageElement[] | undefined): 
 /**
  * Resolve Chat-facing text for an inbound QQ message.
  *
- * Prefer `content` when it already has useful text. Otherwise fall back to
- * voice ASR, ARK card metadata, then nested `msg_elements` (101/102/103).
+ * Prefer `content` when it already has useful text, while preserving nested
+ * `msg_elements` (101/102/103) after it. Otherwise fall back to voice ASR,
+ * ARK card metadata, then nested elements.
  * Full platform payloads stay on `raw`.
  */
 export function resolveInboundDisplayText(raw: QQIncomingMessage): string {
   if (isNonEmptyText(raw.content)) {
-    return raw.content;
+    const nested = collectElementText(raw.msg_elements);
+    if (!nested || nested === raw.content.trim()) {
+      return raw.content;
+    }
+    return `${raw.content.trim()}\n${nested}`;
   }
 
   const asrText = firstAsrText(raw.attachments);
