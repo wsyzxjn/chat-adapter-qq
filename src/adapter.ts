@@ -14,6 +14,7 @@ import type {
   StreamChunk,
   StreamOptions,
   ThreadInfo,
+  UserInfo,
   WebhookOptions,
 } from "chat";
 import { ChatError, ConsoleLogger, Message, NotImplementedError, RateLimitError } from "chat";
@@ -65,6 +66,7 @@ import type {
   QQInteractionPayload,
   QQMessageEventType,
   QQMessageEventDataMap,
+  QQMessageCard,
   QQMediaPayload,
   QQMediaUploadRequest,
   QQMediaUploadResponse,
@@ -109,6 +111,7 @@ import type {
   QQUpdateGroupJoinApprovalStrategyResponse,
   QQUpdateGroupJoinApprovalWhitelistRequest,
   QQUpdateGroupJoinApprovalWhitelistResponse,
+  QQUserInfo,
   QQWebhookPayload,
 } from "./types.js";
 import {
@@ -561,7 +564,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     return new Message({
       attachments: toAttachments(raw.attachments),
       author: {
-        fullName: raw.author?.username ?? raw.author?.nick ?? authorId,
+        fullName: raw.author?.member_nickname || raw.author?.username || raw.author?.nick || authorId,
         isBot: raw.author?.bot ?? "unknown",
         isMe,
         userId: authorId,
@@ -614,6 +617,53 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       ark,
       msg_type: 3,
     }));
+  }
+
+  /** Send a QQ native image-and-text card using the current reply context. */
+  async postQQCard(threadId: string, card: QQMessageCard): Promise<RawMessage<QQRawMessage>> {
+    const thread = this.decodeThreadId(threadId);
+    this.assertFeature(thread, "postMessage");
+    if (card.type !== "tuwen") {
+      throw new ChatError("QQ native cards require type=tuwen.", "INVALID_REQUEST");
+    }
+    for (const [field, max] of [["title", 50], ["description", 200]] as const) {
+      const length = Array.from(card.content[field]).length;
+      if (length < 1 || length > max) {
+        throw new ChatError(`QQ card ${field} requires 1–${max} characters.`, "INVALID_REQUEST");
+      }
+    }
+    for (const field of ["url", "pic_url"] as const) {
+      const value = card.content[field];
+      let valid = false;
+      try {
+        valid = new URL(value).protocol === "https:" && value.length <= 1024;
+      } catch {
+        // Invalid URLs are reported through the same public validation error.
+      }
+      if (!valid) {
+        throw new ChatError(`QQ card ${field} requires an HTTPS URL of at most 1024 characters.`, "INVALID_REQUEST");
+      }
+    }
+    return this.postPayload(threadId, thread, this.withPassiveContext(threadId, {
+      card,
+      msg_type: 8,
+    }));
+  }
+
+  /** Query a C2C user's QQ profile by raw user openid. Requires friendship with the bot. */
+  async getQQUserInfo(userOpenId: string): Promise<QQUserInfo> {
+    return this.apiRequest(`/v2/users/${encodeURIComponent(userOpenId)}/info`, { method: "GET" });
+  }
+
+  async getUser(userId: string): Promise<UserInfo> {
+    const info = await this.getQQUserInfo(userId);
+    return {
+      avatarUrl: info.avatar,
+      fullName: info.username,
+      isBot: false,
+      userId,
+      userName: info.username,
+    };
   }
 
   async generateQQUrlLink(callbackData?: string): Promise<QQGeneratedUrlLinkResponse> {
@@ -999,7 +1049,8 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
     });
     const sentRaw = result.body;
     const asynchronouslyAccepted = result.status === 201 || result.status === 202;
-    const content = sentRaw.content ?? payload.content ?? payload.markdown?.content;
+    const content = sentRaw.content ?? payload.content ?? payload.markdown?.content
+      ?? (payload.card ? [payload.card.content.title, payload.card.content.description, payload.card.content.url].join("\n") : undefined);
     const generatedId = asynchronouslyAccepted
       ? `qq:pending/${sentRaw.audit_id ?? crypto.randomUUID()}`
       : crypto.randomUUID();
@@ -1019,6 +1070,7 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
       _chat_thread_id: toThreadStorageId(thread),
       _chat_thread_type: thread.type,
       author: sentRaw.author ?? this.getOutboundAuthor(thread.type),
+      ...(payload.card ? { card: payload.card } : {}),
       id: sentRaw.id ?? sentRaw.msg_id ?? generatedId,
       timestamp: sentRaw.timestamp ?? new Date().toISOString(),
       ...(content !== undefined ? { content } : {}),
@@ -1045,6 +1097,11 @@ export class QQAdapter implements Adapter<QQThreadId, QQRawMessage> {
 
   mentionUser(userId: string): string {
     return `<qqbot-at-user id="${userId}" />`;
+  }
+
+  /** Group admins only; QQ permits one mention per group per day. */
+  mentionEveryone(): string {
+    return "<qqbot-at-everyone />";
   }
 
   async editMessage(threadId: string, _messageId: string, _message: AdapterPostableMessage): Promise<RawMessage<QQRawMessage>> {

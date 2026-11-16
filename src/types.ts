@@ -209,6 +209,8 @@ export interface QQMessageAuthor {
   id?: string;
   /** Member openid in group scene. */
   member_openid?: string;
+  /** Display nickname within the group. */
+  member_nickname?: string;
   /** Display nickname. */
   nick?: string;
   /** User openid in c2c scene. */
@@ -343,6 +345,21 @@ export interface QQArkPayload {
   template_id: number;
 }
 
+/** QQ native image-and-text card, sent with `msg_type=8`. */
+export interface QQMessageCard {
+  type: "tuwen";
+  content: {
+    /** 1–50 characters. */
+    title: string;
+    /** 1–200 characters. */
+    description: string;
+    /** HTTPS destination, at most 1024 characters. */
+    url: string;
+    /** HTTPS image URL, at most 1024 characters. */
+    pic_url: string;
+  };
+}
+
 export interface QQMediaPayload {
   file_info: string;
   file_uuid?: string;
@@ -433,6 +450,8 @@ export interface QQBaseMessage {
   ark_data?: QQArkData;
   /** Author metadata. */
   author?: QQMessageAuthor;
+  /** Native image-and-text card retained for sent messages. */
+  card?: QQMessageCard;
   /** Message text content. */
   content?: string;
   /** Edited timestamp. */
@@ -445,6 +464,8 @@ export interface QQBaseMessage {
   group_id?: string;
   /** Group openid field from QQ payloads. */
   group_openid?: string;
+  /** Cross-application group openid, available when a third-party app is bound. */
+  union_group_openid?: string;
   /** Primary message id. */
   id?: string;
   /** QQ msg_id field (also used for passive reply context). */
@@ -508,6 +529,8 @@ export interface QQThreadResolvableEventData {
   event_id?: string;
   group_id?: string;
   group_openid?: string;
+  /** Cross-application group openid, available when a third-party app is bound. */
+  union_group_openid?: string;
   id?: string;
   msg_id?: string;
   op_member_openid?: string;
@@ -634,6 +657,8 @@ export interface QQSendMessageOptions {
 export interface QQSendMessageRequest {
   /** QQ Ark message payload. */
   ark?: QQArkPayload;
+  /** Native image-and-text card payload. */
+  card?: QQMessageCard;
   /** Outbound message content. */
   content?: string;
   /** Passive reply context field. */
@@ -654,7 +679,7 @@ export interface QQSendMessageRequest {
   msg_id?: string;
   /** Passive reply sequence in the same msg_id context. */
   msg_seq?: number;
-  /** QQ msg type: 0=text, 2=markdown, 3=ark, 6=input_notify, 7=media. */
+  /** QQ msg type: 0=text, 2=markdown, 3=ark, 6=input_notify, 7=media, 8=card. */
   msg_type: number;
 }
 
@@ -1082,12 +1107,22 @@ export interface QQCommandPanelTargetUpdateInput {
   user_openids?: string[];
 }
 
+/** User info requires a friendship with the bot; limited to 10 QPS by QQ. */
+export interface QQUserInfo {
+  union_openid?: string;
+  username: string;
+  avatar: string;
+  allow_proactive_msg: boolean;
+}
+
 export interface QQGroupInfo {
   group_class_text?: string;
   group_finger_memo?: string;
   group_member_num?: number;
   group_name?: string;
   group_openid: string;
+  /** Cross-application group openid, available when a third-party app is bound. */
+  union_group_openid?: string;
   group_tags?: string[];
 }
 

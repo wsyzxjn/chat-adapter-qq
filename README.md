@@ -25,7 +25,7 @@ pnpm add @amatsuka/chat-adapter-qq chat @chat-adapter/state-memory
 
 要求 Node.js 20 或更高版本；当前适配器基于 Chat SDK 4.43。
 
-已按 2026-10-26 可访问的 QQ 官方 API v2 文档核对，当前 C2C/群聊范围内的官方接口均已封装。完整接口、权限限制和范围外能力见 [协议与能力对照](docs/protocol-alignment.md)。默认沿用历史主机以兼容现有 IP 白名单，也可切到当前 wiki 的 `api.bot.qq.com` 或启用自动主机回退。
+已按 2026-11-17 可访问的 QQ 官方 API v2 文档核对，覆盖截至 2026-11-16 的更新，包括用户资料查询、群昵称与统一群标识、原生图文卡片和 @全体成员。完整接口、权限限制和范围外能力见 [协议与能力对照](docs/protocol-alignment.md)。默认沿用历史主机以兼容现有 IP 白名单，也可切到当前 wiki 的 `api.bot.qq.com` 或启用自动主机回退。
 
 ## 快速开始
 
@@ -281,6 +281,36 @@ await qq.postQQMessage("qq:c2c/<openid>", "引用回复", {
 C2C `stream()` 在存在入站 `msg_id` 被动上下文时使用 QQ 原生 `stream_messages`，并在整个流中固定使用同一个 `msg_id` 和 `msg_seq`，期间收到新消息也不会切换回复对象。各帧使用原始累计文本，保留已发送的前缀，不自动补全未闭合的 Markdown 标记（QQ 会以 `40007` 拒绝修改前缀的内容）；主动场景或协议调用失败时会降级为普通消息。
 
 Embed 在 QQ 官方 C2C/GROUP 场景下不支持，当前不适配。
+
+## 原生图文卡片、@全体成员与用户资料
+
+`postQQCard()` 发送 QQ 原生图文卡片（`msg_type=8`），支持单聊与群聊，并自动带上当前被动回复上下文：
+
+```ts
+await qq.postQQCard("qq:group/<group_openid>", {
+  type: "tuwen",
+  content: {
+    title: "今日推荐",
+    description: "查看本期精选内容",
+    url: "https://example.com/article",
+    pic_url: "https://example.com/cover.png",
+  },
+});
+
+await qq.postMessage("qq:group/<group_openid>", `${qq.mentionEveryone()} 群公告`);
+
+const profile = await qq.getQQUserInfo("<user_openid>");
+// username、avatar、allow_proactive_msg，以及绑定第三方应用时的 union_openid
+const user = await qq.getUser("<user_openid>"); // Chat SDK UserInfo，包含 avatarUrl
+```
+
+原生卡片标题为 1–50 字符，描述为 1–200 字符，跳转和图片链接均须为 HTTPS 且不超过 1024 字符。Chat SDK 的普通 `Card` 继续渲染为 Markdown 与按钮；发送原生图文卡片使用 `postQQCard()`。
+
+`mentionEveryone()` 返回官方 `<qqbot-at-everyone />` 标记，可用于群聊文本和 Markdown。机器人须为群管理员，每个群每天仅可使用一次；权限与配额由 QQ 服务端判断。
+
+用户资料查询要求用户与机器人有好友关系，QQ 限制为 10 QPS；无好友关系的 `40184001` 映射为 `PERMISSION_DENIED`。接口接受原始单聊用户 openid，群成员 openid 不等同于单聊用户 openid。`allow_proactive_msg` 原样返回，不作为本地发送拦截条件。
+
+入站消息的 `author.fullName` 优先展示群昵称 `raw.author.member_nickname`，`author.userName` 保留账号昵称。头像通过 `raw.author.avatar` 获取；绑定第三方应用后，群消息、机器人入退群和成员增减事件的 `union_group_openid` 原样保留，`getQQGroupInfo()` 也会返回该字段。线程 ID 仍使用应用内的 `group_openid`。
 
 ## 菜单、面板与群管理
 

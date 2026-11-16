@@ -1,6 +1,6 @@
 # QQ API v2 与 Chat SDK 能力对照
 
-核对日期：2026-10-26。依据当日可访问的 QQ 官方文档（站点资源版本 v1.43.0），最新变更记录为 2026-10-21；Chat SDK 按 npm 稳定版 4.43.0 的发布包类型、源码及配套文档核对。
+QQ 文档核对日期：2026-11-17。依据当日可访问的 QQ 官方文档（站点资源版本 v1.50.0），最新变更记录为 2026-11-16；Chat SDK 按项目已安装的 4.43.0 发布包类型、源码及配套文档核对。
 
 本项目当前范围为 C2C 与群聊，接收方式包括 Webhook、内置 Gateway 和宿主转发 Socket payload。本表区分平台提供的能力与适配器实际实现，未把接口文档存在视为当前机器人已获得调用权限。
 
@@ -8,6 +8,9 @@
 
 | 日期 | 官方变更 | 本项目状态 |
 | --- | --- | --- |
+| 2026-11-16 | 用户基本信息查询；消息昵称与头像、群昵称、跨应用群标识 | 已实现 `getQQUserInfo` 与 SDK `getUser`；群昵称用于显示名，头像和 `union_group_openid` 原样保留 |
+| 2026-10-28 | 单聊与群聊图文卡片 | 已实现 `postQQCard`，使用 `msg_type=8` 并校验长度与 HTTPS 链接 |
+| 2026-10-26 | 群聊 @全体成员 | `mentionEveryone()` 返回官方标记，支持文本与 Markdown；管理员身份及每天一次配额由 QQ 判断 |
 | 2026-10-21 | 素材图片管理，新增 `qqbot-media://` 引用 | 已实现 prepare、预签名 PUT、complete、列表与删除 |
 | 2026-09-16 | 分享链接字段修订；入站 ARK 类型增加 `picture` | 已实现分享链接接口并补齐入站结构化卡片类型 |
 | 2026-09-03 | 群成员列表、详情、批量移除、黑名单 | 已实现全部管理方法；部分接口仍有内邀/白名单限制 |
@@ -18,6 +21,9 @@
 
 ## 本次修正
 
+- 新增 `GET /v2/users/{user_openid}/info` 封装与完整响应类型，包括 `username`、`avatar`、`allow_proactive_msg` 和可选 `union_openid`。SDK `getUser` 将其映射为 `UserInfo`。接口要求好友关系，限频 10 QPS；`40184001` 映射为 `PERMISSION_DENIED`，不会根据主动推送开关在本地阻止发送。
+- 原生图文卡片通过独立的 `postQQCard` 发送；仅携带 `card`、`msg_type=8` 和已有回复上下文，复用鉴权、错误映射、发送响应处理与缓存。普通 Chat SDK Card 的 Markdown/Keyboard 渲染继续使用原路径。
+- 群消息显示名优先使用 `member_nickname`，账号昵称保留为 `userName`；头像留在 `raw.author.avatar`。群信息、群消息及群事件类型补齐 `union_group_openid`，线程 ID 继续使用 `group_openid`。
 - 当前 wiki 使用 `https://api.bot.qq.com`；适配器默认仍沿用 `api.sgroup.qq.com` / `bots.qq.com` 兼容既有机器人 IP 白名单。可配置 `apiHost: "bot"` 主动切换，或启用 `hostFallback` 在默认 token 主机不可达时自动切换接口与 token 主机。显式 `apiBaseUrl`、`tokenEndpoint` 始终优先。沙箱域名没有在本轮取得新的官方地址依据，未推测替换。
 - 统一解析 `err_code`、`code`、`errcode`，优先采用第一个非零业务码；`code: 0` 不会再遮蔽同时返回的 `errcode` / `err_code`。HTTP 200 中的业务错误会抛出标准错误；token 接口的业务限流、认证错误也会正确分类。HTTP 201/202 继续标记为异步接受，保留实际业务码，不能视为已经送达。
 - 补充当前收发、媒体与流式接口的错误分类，包括主动消息限流、用户拒收、被动回复过期、消息过长与流式 `50002` 限流。仅依据状态码和数值错误码，错误描述不参与判断。响应体的 `trace_id` 会保留在错误描述中。
@@ -41,7 +47,9 @@
 | 能力 | 实现与限制 |
 | --- | --- |
 | C2C 与群消息接收 | `C2C_MESSAGE_CREATE`、`GROUP_AT_MESSAGE_CREATE`、`GROUP_MESSAGE_CREATE` 进入共用解析流程；全量群消息需 QQ 侧启用 |
+| 用户资料 | `getQQUserInfo` 返回 QQ 资料；SDK `getUser` 映射头像与昵称，仅适用于与机器人有好友关系的单聊用户 openid |
 | 文本、Markdown、Card | 文本、Markdown、常用 Card 元素与 Keyboard；无 QQ 对应组件时显式报不支持 |
+| 原生图文卡片与 @全体成员 | `postQQCard` 支持 C2C/群聊 `msg_type=8`；`mentionEveryone()` 用于群文本/Markdown，要求管理员且每群每天一次 |
 | 被动/主动消息 | 自动缓存消息或可回复事件上下文；不在本地预判主动/被动配额与权限，服务端拒绝后映射标准错误 |
 | 召回消息 | C2C `isWakeup`，自动排除被动上下文；周期和配额由 QQ 判断 |
 | C2C 原生流式 | `stream_messages`、固定消息上下文与序号、递增帧 index、结束帧 `input_state=10`；没有建立原生流或协议失败时降级为普通消息 |
@@ -64,12 +72,14 @@
 
 ## 官方 C2C / 群聊接口覆盖
 
-适配器已覆盖本次核对范围内的 33 个管理、配置和上传端点，并为这些方法导出完整请求/响应类型。实现复用现有鉴权、超时、错误映射和请求层；哈希计算复用仓库现有 Web Crypto 与纯 TypeScript MD5 实现，没有引入第二套 QQ 客户端。
+适配器已覆盖本次核对范围内的 34 个资料、管理、配置和上传端点，并为这些方法导出完整请求/响应类型。实现复用现有鉴权、超时、错误映射和请求层；哈希计算复用仓库现有 Web Crypto 与纯 TypeScript MD5 实现，没有引入第二套 QQ 客户端。
 
 公开方法分为以下组：
 
 | 能力组 | 方法 |
 | --- | --- |
+| 用户资料 | `getQQUserInfo`、SDK `getUser` |
+| 原生图文卡片 | `postQQCard`（复用既有消息端点） |
 | Markdown 素材 | `uploadQQMediaImage`、`listQQMediaImages`、`deleteQQMediaImage` |
 | 菜单 | `getQQMenu`、`updateQQMenu` |
 | 指令面板 | `listQQCommandPanels`、`createQQCommandPanel`、`getQQCommandPanel`、`updateQQCommandPanel`、`deleteQQCommandPanel`、`updateQQCommandPanelTargets` |
@@ -93,6 +103,7 @@
 
 ## 官方文档中的歧义与验证范围
 
+- 消息类型概览仍未列出 `msg_type=8`，本次原生图文卡片以 2026-10-28 变更记录及单聊、群聊发送接口的 `MessageCard` 定义与请求示例为准。
 - 单聊被动回复：概述与单聊接口页首写 60 分钟，单聊请求表中的 `msg_id` 说明仍写 5 分钟。本适配器不增加本地过期阻断，以实际 QQ 响应为准。
 - 通用 API 指南使用 `err_code`，token 接口明确使用 `code`，部分既有接口/返回也使用 `errcode`，因此错误提取覆盖三种实际字段。
 - WebSocket 部分页的示例鉴权仍写已废弃的 Bot Token；当前使用 `QQBot ACCESS_TOKEN`，按最新凭证与调用指南执行。
@@ -100,6 +111,8 @@
 
 ## 主要来源
 
+- [用户基本信息](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_info.get.html)
+- [变更记录（含 2026-11-16、2026-10-28 与 2026-10-26）](https://bot.q.qq.com/wiki/develop/api-v2/changelog.html)
 - [统一 API、错误响应与追踪](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/api-call-guide.html)
 - [Access Token、业务错误与刷新](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/access-token.html)
 - [消息收发概述](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/overview.html)
